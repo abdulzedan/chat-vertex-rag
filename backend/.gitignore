@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.env
+*.log
+.DS_Store
+uploads/
+*.json
+!package.json
+!tsconfig.json
+!components.json
