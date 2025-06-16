@@ -6,7 +6,6 @@ import uuid
 from datetime import datetime
 
 from app.models.schemas import DocumentUploadResponse, Document, GoogleDriveImportRequest
-from app.services.document_processor import DocumentProcessor
 from app.services.enhanced_document_processor import EnhancedDocumentProcessor
 from app.services.vertex_search import VertexSearchService
 from app.services.document_uploader import save_uploaded_file
@@ -16,13 +15,9 @@ logger = logging.getLogger(__name__)
 
 # Initialize services
 logger.info("Initializing document services...")
-document_processor = DocumentProcessor()
 enhanced_processor = EnhancedDocumentProcessor()
 search_service = VertexSearchService()
 logger.info("Document services initialized")
-
-# Always use enhanced processor for better document processing
-USE_ENHANCED_PROCESSOR = True
 
 @router.post("/upload", response_model=DocumentUploadResponse)
 async def upload_file(file: UploadFile = File(...)):
@@ -77,21 +72,14 @@ async def upload_file(file: UploadFile = File(...)):
         try:
             logger.info(f"[{request_id}] Processing document...")
             
-            # Use enhanced processor if enabled
-            if USE_ENHANCED_PROCESSOR:
-                processed_doc = await enhanced_processor.process_file(
-                    file_path=file_path,
-                    file_type=file.content_type,
-                    filename=file.filename
-                )
-                logger.info(f"[{request_id}] Enhanced processing complete: {processed_doc['chunk_count']} semantic chunks")
-                logger.info(f"[{request_id}] Metadata extracted: {len(processed_doc['metadata']['sections'])} sections, {len(processed_doc['tables'])} tables")
-            else:
-                processed_doc = await document_processor.process_file(
-                    file_path=file_path,
-                    file_type=file.content_type,
-                    filename=file.filename
-                )
+            # Process document using enhanced processor
+            processed_doc = await enhanced_processor.process_file(
+                file_path=file_path,
+                file_type=file.content_type,
+                filename=file.filename
+            )
+            logger.info(f"[{request_id}] Enhanced processing complete: {processed_doc['chunk_count']} semantic chunks")
+            logger.info(f"[{request_id}] Metadata extracted: {len(processed_doc['metadata']['sections'])} sections, {len(processed_doc['tables'])} tables")
             
             logger.info(f"[{request_id}] Document processed: {processed_doc['chunk_count']} chunks, {processed_doc['character_count']} characters")
             
@@ -106,8 +94,8 @@ async def upload_file(file: UploadFile = File(...)):
                 'char_count': processed_doc['character_count']
             }
             
-            # Add enhanced metadata if available
-            if USE_ENHANCED_PROCESSOR and 'metadata' in processed_doc:
+            # Add enhanced metadata
+            if 'metadata' in processed_doc:
                 metadata.update({
                     'word_count': processed_doc['metadata']['word_count'],
                     'has_tables': processed_doc['metadata']['has_tables'],
