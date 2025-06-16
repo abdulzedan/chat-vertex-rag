@@ -6,14 +6,15 @@ import logging
 from dotenv import load_dotenv
 import vertexai
 
-from app.api import documents, chat, websocket
-from app.services.rag_engine import init_rag_corpus
+# Load environment variables BEFORE importing modules that use them
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-load_dotenv()
+# Now import modules that depend on environment variables
+from app.api import documents, chat, websocket
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -26,8 +27,7 @@ async def lifespan(app: FastAPI):
     
     vertexai.init(project=project_id, location=location)
     
-    # Initialize RAG corpus
-    await init_rag_corpus()
+    logger.info(f"Vertex AI initialized for project: {project_id}")
     
     yield
 
