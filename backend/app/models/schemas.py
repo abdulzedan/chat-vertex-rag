@@ -26,6 +26,7 @@ class ChatRequest(BaseModel):
     question: str
     document_ids: Optional[List[str]] = None
     use_rag: bool = True
+    session_id: Optional[str] = None
 
 class ChatResponse(BaseModel):
     answer: str
@@ -33,8 +34,10 @@ class ChatResponse(BaseModel):
     
 class QueryRequest(BaseModel):
     question: str
+    document_ids: Optional[List[str]] = None
     similarity_top_k: int = 10
     vector_distance_threshold: float = 0.5
+    session_id: Optional[str] = None
 
 class GoogleDriveImportRequest(BaseModel):
     drive_url: str
