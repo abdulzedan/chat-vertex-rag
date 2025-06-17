@@ -68,10 +68,10 @@ class EnhancedDocumentProcessor:
     
     def __init__(self):
         self.vision_model = GenerativeModel("gemini-2.0-flash-001")
-        # Better chunking parameters based on document_processors.md best practices
-        self.min_chunk_size = 100
-        self.max_chunk_size = 500  # Smaller chunks for better granularity
-        self.chunk_overlap = 50
+        # Optimized chunking parameters for better context preservation
+        self.min_chunk_size = 300   # Minimum viable context
+        self.max_chunk_size = 1500  # Optimal for completeness without fragmentation
+        self.chunk_overlap = 150    # Substantial overlap to maintain context
         
         # Optional Document AI processor
         use_document_ai_env = os.getenv("USE_DOCUMENT_AI", "false")
@@ -293,10 +293,60 @@ class EnhancedDocumentProcessor:
         sentences = [s.strip() for s in sentences if s.strip()]
         return sentences
     
+    def _has_structured_content(self, text: str) -> bool:
+        """Detect if text contains structured content (tables, lists, etc.)"""
+        # Check for table markers
+        if '=== TABLE' in text or '|' in text:
+            return True
+        
+        # Check for list patterns
+        list_patterns = [
+            r'^\s*\d+\.\s',  # Numbered lists
+            r'^\s*[•\-\*]\s',  # Bullet points
+            r'^\s*[A-Z]\.\s',  # Letter lists
+        ]
+        
+        lines = text.split('\n')
+        list_count = 0
+        for line in lines:
+            for pattern in list_patterns:
+                if re.search(pattern, line, re.MULTILINE):
+                    list_count += 1
+                    break
+        
+        # If more than 20% of lines are list items, consider it structured
+        if len(lines) > 0 and list_count / len(lines) > 0.2:
+            return True
+        
+        # Check for percentage/currency patterns (financial documents)
+        financial_patterns = [
+            r'\d+\.?\d*\s*%',  # Percentages
+            r'\$\d+(?:,\d{3})*(?:\.\d{2})?',  # Currency
+            r'\d+\s*bps\b',  # Basis points
+        ]
+        
+        financial_matches = 0
+        for pattern in financial_patterns:
+            financial_matches += len(re.findall(pattern, text))
+        
+        # If there are many financial values, treat as structured
+        return financial_matches > 10
+    
     def _semantic_chunk(self, text: str, metadata: DocumentMetadata) -> List[DocumentChunk]:
-        """Create semantic chunks based on sentence boundaries and structure"""
+        """Create semantic chunks based on sentence boundaries and structure with improved sizing"""
         chunks = []
         chunk_id = 0
+        
+        # Detect if content has structured data for adaptive chunking
+        has_structured_content = self._has_structured_content(text)
+        if has_structured_content:
+            logger.info("Detected structured content - using larger chunks to preserve context")
+            # Use larger chunks for structured content
+            max_chunk_size = 2000
+            min_chunk_size = 500
+        else:
+            max_chunk_size = self.max_chunk_size
+            min_chunk_size = self.min_chunk_size
         
         # Split into sentences with fallback
         try:
@@ -320,12 +370,12 @@ class EnhancedDocumentProcessor:
             should_create_chunk = False
             
             # Create chunk if max size would be exceeded
-            if current_length + sentence_length > self.max_chunk_size and current_chunk:
+            if current_length + sentence_length > max_chunk_size and current_chunk:
                 should_create_chunk = True
                 chunk_type = 'max_size'
             
             # Create chunk if we've reached min size and hit natural boundaries
-            elif current_length >= self.min_chunk_size and current_chunk:
+            elif current_length >= min_chunk_size and current_chunk:
                 # Check for natural breaking points
                 if (i < len(sentences) - 1 and 
                     (sentence.strip().endswith('.') or 
@@ -335,8 +385,8 @@ class EnhancedDocumentProcessor:
                     should_create_chunk = True
                     chunk_type = 'natural_break'
                 
-                # Force chunk every 3-5 sentences when min size reached
-                elif len(current_chunk) >= 3:
+                # For larger chunks, allow more sentences before forcing a break
+                elif len(current_chunk) >= 5:  # Increased from 3 for better context
                     should_create_chunk = True
                     chunk_type = 'sentence_limit'
             
@@ -479,12 +529,12 @@ class EnhancedDocumentProcessor:
         return chunks
     
     def _chunk_text_segment(self, text: str, start_chunk_id: int, start_char: int, metadata: DocumentMetadata) -> List[DocumentChunk]:
-        """Chunk a text segment (non-table content) into smaller pieces"""
+        """Chunk a text segment (non-table content) with optimized sizing"""
         chunks = []
         
-        # Use smaller chunks for text since tables will be large
-        max_chunk_size = 300
-        min_chunk_size = 100
+        # Use balanced chunks for text segments (not too small to avoid fragmentation)
+        max_chunk_size = 1200  # Increased from 300
+        min_chunk_size = 400   # Increased from 100
         
         try:
             sentences = sent_tokenize(text)
