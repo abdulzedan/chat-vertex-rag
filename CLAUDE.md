@@ -10,7 +10,7 @@ cd backend
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --port 8000 --timeout-keep-alive 600
 ```
 
 ### Frontend
@@ -32,6 +32,11 @@ pytest
 cd frontend
 npm test
 ```
+
+## End State For User 
+The ideal state for the application is the following:
+The user will head to this browser, be able to browse documents on the page through uploading it (which would then get processed in the backend and stored in Vertex AI Search). Select the documents they want to use for chat. When the documents are selected, they are able to click on a button in the top right of the page, which would open a chat interface slide window. The users an have a chat and ask questions about the documents they selected. 
+
 
 ## High-Level Architecture
 
@@ -58,6 +63,8 @@ Key architectural decisions:
   - Document CRUD operations
   - Streaming chat/query endpoints
   - Real-time WebSocket connections
+- **VENV** 
+  - Virtual Environment for python is in the backend directory, it can be started by 'source backend/venv/bin/activate'
 
 ### Frontend Architecture
 - **React 19 + TypeScript**: Type-safe component development
@@ -81,6 +88,13 @@ Key architectural decisions:
    - Graceful degradation if RAG corpus unavailable
    - Fallback to direct Gemini for small documents
    - User-friendly error messages
+
+4. **Important Files**
+   - These files are used to help you understand how to implement or some considerations to make:
+	- rag_vertex_example.md (this is an example implementation)
+	- document_processors.md (this is an example processor)
+
+
 
 ## Important Considerations
 
