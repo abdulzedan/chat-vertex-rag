@@ -1,17 +1,28 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { MessageSquare, Send, Loader2 } from 'lucide-react';
+import { MessageSquare, Send, Loader2, Trash2, FileText } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import ReactMarkdown from 'react-markdown';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
-import { ChatMessage } from '@/types';
+import { Badge } from '@/components/ui/badge';
+import { ChatMessage, Document } from '@/types';
 
-const ChatInterface: React.FC = () => {
+interface ChatInterfaceProps {
+  selectedDocuments: Document[];
+}
+
+const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedDocuments }) => {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [sessionId, setSessionId] = useState(() => {
+    const id = crypto.randomUUID();
+    console.log('Generated new session ID:', id);
+    return id;
+  });
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -34,22 +45,27 @@ const ChatInterface: React.FC = () => {
     setIsLoading(true);
 
     try {
+      const requestBody = {
+        question: input,
+        similarity_top_k: selectedDocuments.length > 0 ? selectedDocuments.length * 25 : 10,
+        vector_distance_threshold: 0.5,
+        document_ids: selectedDocuments.length > 0 ? selectedDocuments.map(doc => doc.id) : null,
+        session_id: sessionId,
+      };
+      
       const response = await fetch('/api/chat/query', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          question: input,
-          similarity_top_k: 10,
-          vector_distance_threshold: 0.5,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       if (!response.ok) throw new Error('Failed to send message');
 
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
+      
       let assistantMessage: ChatMessage = {
         role: 'assistant',
         content: '',
@@ -105,20 +121,75 @@ const ChatInterface: React.FC = () => {
     }
   };
 
+  const clearChat = () => {
+    setMessages([]);
+    setSessionId(crypto.randomUUID()); // Generate new session ID when clearing chat
+  };
+
   return (
     <>
-      <Button
-        onClick={() => setOpen(true)}
-        className="fixed bottom-4 right-4 rounded-full h-12 w-12 shadow-lg"
-        size="icon"
-      >
-        <MessageSquare className="h-5 w-5" />
-      </Button>
+      <div className="fixed bottom-4 right-4">
+        <Button
+          onClick={() => setOpen(true)}
+          className="relative rounded-full h-12 w-12 shadow-lg transition-all duration-200 hover:scale-105"
+          size="icon"
+        >
+          <MessageSquare className="h-5 w-5" />
+          {selectedDocuments.length > 0 && (
+            <Badge 
+              variant="destructive" 
+              className="absolute -top-1 -right-1 h-5 w-5 flex items-center justify-center p-0 text-xs"
+            >
+              {selectedDocuments.length}
+            </Badge>
+          )}
+        </Button>
+      </div>
 
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetContent className="w-[400px] sm:w-[540px] flex flex-col p-0">
-          <SheetHeader className="px-6 py-4 border-b">
-            <SheetTitle>Document Q&A</SheetTitle>
+          <SheetHeader className="px-6 py-4 border-b space-y-3">
+            <div className="flex items-center justify-between">
+              <SheetTitle>Document Q&A</SheetTitle>
+              {messages.length > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={clearChat}
+                  className="h-8 px-3 text-xs"
+                >
+                  <Trash2 className="h-3 w-3 mr-1" />
+                  Clear Chat
+                </Button>
+              )}
+            </div>
+            
+            {/* Document selection info */}
+            <div className="flex flex-col gap-2">
+              {selectedDocuments.length > 0 ? (
+                <div className="flex flex-wrap gap-1">
+                  <span className="text-xs text-muted-foreground">Searching in:</span>
+                  {selectedDocuments.slice(0, 3).map((doc) => (
+                    <Badge key={doc.id} variant="secondary" className="text-xs">
+                      <FileText className="h-3 w-3 mr-1" />
+                      {doc.display_name.length > 15 
+                        ? `${doc.display_name.slice(0, 15)}...` 
+                        : doc.display_name}
+                    </Badge>
+                  ))}
+                  {selectedDocuments.length > 3 && (
+                    <Badge variant="secondary" className="text-xs">
+                      +{selectedDocuments.length - 3} more
+                    </Badge>
+                  )}
+                </div>
+              ) : (
+                <div className="text-xs text-muted-foreground flex items-center gap-1">
+                  <FileText className="h-3 w-3" />
+                  Searching all documents
+                </div>
+              )}
+            </div>
           </SheetHeader>
           
           <ScrollArea className="flex-1 p-6" ref={scrollAreaRef}>
@@ -134,16 +205,25 @@ const ChatInterface: React.FC = () => {
                     key={index}
                     className={`flex ${
                       message.role === 'user' ? 'justify-end' : 'justify-start'
-                    }`}
+                    } animate-in fade-in-50 slide-in-from-bottom-2 duration-300`}
+                    style={{ animationDelay: `${index * 50}ms` }}
                   >
                     <div
-                      className={`max-w-[80%] rounded-lg px-4 py-2 ${
+                      className={`max-w-[80%] rounded-lg px-4 py-2 transition-all duration-200 ${
                         message.role === 'user'
-                          ? 'bg-primary text-primary-foreground'
-                          : 'bg-muted'
+                          ? 'bg-primary text-primary-foreground shadow-sm'
+                          : 'bg-muted shadow-sm hover:shadow-md'
                       }`}
                     >
-                      {message.content || (
+                      {message.content ? (
+                        message.role === 'assistant' ? (
+                          <ReactMarkdown className="prose prose-sm max-w-none">
+                            {message.content}
+                          </ReactMarkdown>
+                        ) : (
+                          <div>{message.content}</div>
+                        )
+                      ) : (
                         <div className="space-y-2">
                           <Skeleton className="h-4 w-[200px]" />
                           <Skeleton className="h-4 w-[160px]" />
@@ -154,28 +234,37 @@ const ChatInterface: React.FC = () => {
                 ))
               )}
               {isLoading && messages[messages.length - 1]?.role === 'assistant' && !messages[messages.length - 1]?.content && (
-                <div className="flex justify-start">
-                  <div className="bg-muted rounded-lg px-4 py-2">
-                    <Loader2 className="h-4 w-4 animate-spin" />
+                <div className="flex justify-start animate-in fade-in-50 slide-in-from-bottom-2 duration-300">
+                  <div className="bg-muted rounded-lg px-4 py-2 shadow-sm">
+                    <div className="flex items-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <span className="text-sm text-muted-foreground">Thinking...</span>
+                    </div>
                   </div>
                 </div>
               )}
             </div>
           </ScrollArea>
           
-          <div className="border-t p-4">
+          <div className="border-t p-4 bg-background/95 backdrop-blur-sm">
             <div className="flex gap-2">
               <Input
-                placeholder="Ask about your documents..."
+                placeholder={
+                  selectedDocuments.length > 0 
+                    ? `Ask about ${selectedDocuments.length} selected document${selectedDocuments.length > 1 ? 's' : ''}...`
+                    : "Ask about your documents..."
+                }
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                onKeyPress={handleKeyPress}
+                onKeyDown={handleKeyPress}
                 disabled={isLoading}
+                className="transition-all duration-200 focus:shadow-sm"
               />
               <Button
                 onClick={handleSendMessage}
                 disabled={!input.trim() || isLoading}
                 size="icon"
+                className="transition-all duration-200 hover:scale-105 disabled:hover:scale-100"
               >
                 {isLoading ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
