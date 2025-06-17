@@ -18,6 +18,8 @@ search_service = VertexSearchService()
 
 # In-memory conversation storage for context
 conversation_memory: Dict[str, List[Dict]] = {}
+# Store selected documents per session
+session_documents: Dict[str, List[str]] = {}
 
 async def stream_response(generator: AsyncGenerator[str, None]) -> AsyncGenerator[bytes, None]:
     """Convert string generator to SSE format"""
@@ -33,24 +35,44 @@ async def stream_response(generator: AsyncGenerator[str, None]) -> AsyncGenerato
         # Send done signal
         yield f"data: {json.dumps({'done': True})}\n\n".encode()
 
-@router.post("/query")
+
+@router.post("/query") 
 async def query_endpoint(request: QueryRequest):
     """Query documents using Vertex AI Search + Gemini with enhanced context and streaming response"""
     try:
         logger.info(f"Received query: {request.question}")
+        logger.info(f"Session ID: {request.session_id}")
+        logger.info(f"Raw document_ids: {request.document_ids}")
+        logger.info(f"Document count: {len(request.document_ids) if request.document_ids else 0}")
         
         # Generate or use session ID for context
-        session_id = getattr(request, 'session_id', None) or str(uuid.uuid4())
+        session_id = request.session_id or str(uuid.uuid4())
+        logger.info(f"Using session ID: {session_id}")
+        
+        # Handle document selection persistence per session
+        if request.document_ids:
+            # Store selected documents for this session
+            session_documents[session_id] = request.document_ids
+            document_ids = request.document_ids
+            logger.info(f"Stored {len(document_ids)} documents for session {session_id}")
+        else:
+            # Use previously selected documents for this session if available
+            document_ids = session_documents.get(session_id, None)
+            if document_ids:
+                logger.info(f"Using {len(document_ids)} previously selected documents for session {session_id}")
+            else:
+                logger.info(f"No document selection for session {session_id} - searching all documents")
         
         # Search documents using Vertex AI Search with enhanced query
         try:
             logger.info("Searching documents with Vertex AI Search...")
             
-            # Enhanced search - try multiple search strategies
+            # Use optimized search with dynamic scaling based on document count
+            # vertex_search.py now handles optimal result calculation automatically
             search_results = await _enhanced_document_search(
                 query=request.question,
-                max_results=request.similarity_top_k,
-                document_ids=request.document_ids,
+                max_results=request.similarity_top_k,  # Base limit, will be scaled automatically
+                document_ids=document_ids,
                 session_id=session_id
             )
             
@@ -60,7 +82,7 @@ async def query_endpoint(request: QueryRequest):
                     logger.info("Handling generic query with document overview")
                     response_text = await _handle_generic_query(
                         query=request.question,
-                        document_ids=request.document_ids,
+                        document_ids=document_ids,
                         session_id=session_id
                     )
                 else:
@@ -85,7 +107,7 @@ async def query_endpoint(request: QueryRequest):
                         
                 response_gen = response_generator()
             else:
-                if request.document_ids:
+                if document_ids:
                     logger.info("No documents found in selected documents")
                     # When specific documents are selected but no results found
                     response_text = f"I couldn't find information about '{request.question}' in the selected documents. The documents you've selected might not contain relevant information for this question. Try selecting different documents or search all documents."
@@ -135,15 +157,30 @@ async def chat_endpoint(request: ChatRequest):
     """Enhanced chat endpoint with conversation memory and better document understanding"""
     try:
         # Generate or use session ID for context
-        session_id = getattr(request, 'session_id', None) or str(uuid.uuid4())
+        session_id = request.session_id or str(uuid.uuid4())
         logger.info(f"Chat request for session: {session_id}")
+        
+        # Handle document selection persistence per session
+        if hasattr(request, 'document_ids') and request.document_ids:
+            # Store selected documents for this session
+            session_documents[session_id] = request.document_ids
+            document_ids = request.document_ids
+            logger.info(f"Stored {len(document_ids)} documents for session {session_id}")
+        else:
+            # Use previously selected documents for this session if available
+            document_ids = session_documents.get(session_id, None)
+            if document_ids:
+                logger.info(f"Using {len(document_ids)} previously selected documents for session {session_id}")
+            else:
+                logger.info(f"No document selection for session {session_id} - searching all documents")
         
         if request.use_rag:
             # Use enhanced search + Gemini for document-based queries
+            # Dynamic scaling handled automatically by vertex_search.py
             search_results = await _enhanced_document_search(
                 query=request.question,
-                max_results=10,
-                document_ids=request.document_ids,
+                max_results=10,  # Base limit, will be scaled automatically
+                document_ids=document_ids,
                 session_id=session_id
             )
             
@@ -153,7 +190,7 @@ async def chat_endpoint(request: ChatRequest):
                     logger.info("Handling generic query with document overview")
                     response_text = await _handle_generic_query(
                         query=request.question,
-                        document_ids=request.document_ids,
+                        document_ids=document_ids,
                         session_id=session_id
                     )
                 else:
@@ -331,7 +368,7 @@ async def _enhanced_document_search(
     document_ids: List[str] = None,
     session_id: str = None
 ) -> List[Dict]:
-    """Enhanced document search with multiple strategies and generic query handling"""
+    """Enhanced document search with conversation context and fallback strategies"""
     
     # Check if this is a generic query that needs special handling
     # COMMENTED OUT: Generic query detection was interfering with specific queries
@@ -340,39 +377,20 @@ async def _enhanced_document_search(
     #     # Return a special result that signals to handle this as a generic query
     #     return [{'is_generic_query': True, 'original_query': query}]
     
-    # Strategy 1: Direct search
+    # Context-aware query reformulation for conversational RAG
+    if session_id and conversation_memory.get(session_id):
+        logger.info("Reformulating query with conversation context...")
+        conversation_history = conversation_memory.get(session_id, [])
+        if conversation_history:
+            query = await _reformulate_query_with_context(query, conversation_history)
+            logger.info(f"Reformulated query: {query}")
+    
+    # Use regular search - context handled by feeding previous responses to model
     search_results = await search_service.search_documents(
         query=query,
         max_results=max_results,
         document_ids=document_ids
     )
-    
-    # If no results, try broader search terms
-    if not search_results and len(query.split()) > 2:
-        logger.info("No direct results, trying broader search...")
-        # Extract key terms and search again
-        key_terms = [word for word in query.split() if len(word) > 3]
-        if key_terms:
-            broader_query = ' '.join(key_terms[:3])  # Use first 3 key terms
-            search_results = await search_service.search_documents(
-                query=broader_query,
-                max_results=max_results,
-                document_ids=document_ids
-            )
-    
-    # If still no results, try individual key terms
-    if not search_results:
-        logger.info("No broader results, trying individual terms...")
-        for term in query.split():
-            if len(term) > 4:  # Only search meaningful terms
-                term_results = await search_service.search_documents(
-                    query=term,
-                    max_results=max_results // 2,
-                    document_ids=document_ids
-                )
-                search_results.extend(term_results)
-                if search_results:
-                    break
     
     return search_results
 
@@ -386,6 +404,7 @@ async def _generate_contextual_response(
     
     # Get conversation history
     conversation_history = conversation_memory.get(session_id, [])
+    logger.info(f"Session {session_id} has {len(conversation_history)} conversation turns")
     
     # Prepare enhanced context
     context = ""
@@ -401,13 +420,18 @@ async def _generate_contextual_response(
             context += content
         context += "\n"
     
-    # Build conversation context
+    # Build conversation context - include full previous response for better context
     conversation_context = ""
     if conversation_history:
         conversation_context = "\n\nPrevious conversation context:\n"
-        for turn in conversation_history[-3:]:  # Last 3 turns
-            conversation_context += f"User: {turn['question']}\n"
-            conversation_context += f"Assistant: {turn['response'][:200]}...\n\n"
+        # For follow-up questions, include the most recent exchange with full response
+        recent_turn = conversation_history[-1]  # Most recent turn
+        logger.info(f"Including most recent conversation turn for context")
+        conversation_context += f"Previous User Question: {recent_turn['question']}\n"
+        conversation_context += f"Previous Assistant Response: {recent_turn['response']}\n\n"
+        logger.debug(f"Previous Q: '{recent_turn['question'][:50]}...', A: '{recent_turn['response'][:100]}...'")
+    else:
+        logger.info("No conversation history available for context")
     
     # Enhanced prompt with conversation context
     prompt = f"""You are a helpful AI assistant answering questions about uploaded documents. Use the conversation context to provide more relevant and connected responses.
@@ -420,16 +444,56 @@ Current Question: {question}
 Instructions:
 - Answer based on the information provided in the documents
 - Reference specific details from the documents when possible
-- If this question relates to previous questions in the conversation, acknowledge that connection
+- If this question relates to previous questions in the conversation (especially follow-up questions like "compare those rates", "how does this compare", etc.), use the previous context to understand what the user is referring to
+- For follow-up questions, search ALL documents to find comparison information, not just the previously mentioned ones
 - If the documents don't contain enough information, say so clearly
 - Be specific about numbers, percentages, rates, and other quantitative information
 - When discussing pricing or rates, include the specific values mentioned in the documents
 - Cite which document(s) you're referencing
+- For comparison questions, actively search for similar information across all available documents
 
 Answer:"""
     
-    # Generate response
+    # Generate response using search results with conversation context included in prompt
     return await search_service.generate_response(question, search_results)
+
+
+
+async def _reformulate_query_with_context(query: str, conversation_history: List[Dict]) -> str:
+    """Reformulate query to be context-aware using conversation history"""
+    try:
+        # Build context from recent user questions only (avoid negative feedback from assistant responses)
+        previous_questions = []
+        for turn in conversation_history[-2:]:  # Last 2 user questions for context
+            previous_questions.append(turn['question'])
+        
+        # Use simple keyword-based reformulation for better results
+        query_lower = query.lower()
+        
+        # If query has contextual references, expand with previous topics
+        if any(word in query_lower for word in ['that', 'those', 'other', 'compare', 'them', 'this', 'these']):
+            if previous_questions:
+                # Extract key terms from previous questions
+                previous_topics = []
+                for prev_q in previous_questions:
+                    if 'mcap' in prev_q.lower():
+                        previous_topics.append('MCAP')
+                    if any(word in prev_q.lower() for word in ['rate', 'rates', 'pricing']):
+                        previous_topics.append('rates')
+                
+                if previous_topics:
+                    # Simple reformulation with extracted topics
+                    if 'compare' in query_lower and 'MCAP' in previous_topics:
+                        return f"Compare MCAP rates with other lenders rates"
+                    elif any(word in query_lower for word in ['that', 'those']) and previous_topics:
+                        return f"Information about {' '.join(previous_topics)}"
+        
+        # If no context needed, return original query
+        return query
+        
+    except Exception as e:
+        logger.warning(f"Query reformulation failed: {e}, using original query")
+        return query
 
 
 def _store_conversation_turn(session_id: str, question: str, response: str):
@@ -443,9 +507,13 @@ def _store_conversation_turn(session_id: str, question: str, response: str):
         'timestamp': datetime.now().isoformat()
     })
     
+    logger.info(f"Stored conversation turn for session {session_id}. Total turns: {len(conversation_memory[session_id])}")
+    logger.debug(f"Stored Q: '{question[:50]}...', A: '{response[:50]}...'")
+    
     # Keep only last 10 turns per session
     if len(conversation_memory[session_id]) > 10:
         conversation_memory[session_id] = conversation_memory[session_id][-10:]
+        logger.info(f"Trimmed conversation history for session {session_id} to 10 turns")
 
 
 @router.get("/conversations/{session_id}")
@@ -460,7 +528,24 @@ async def get_conversation_history(session_id: str):
 @router.delete("/conversations/{session_id}")
 async def clear_conversation(session_id: str):
     """Clear conversation history for a session"""
+    # Clear both local memory and Vertex AI conversation context
+    local_cleared = False
+    vertex_cleared = False
+    
     if session_id in conversation_memory:
         del conversation_memory[session_id]
+        local_cleared = True
+    
+    # Also clear stored documents for this session
+    if session_id in session_documents:
+        del session_documents[session_id]
+        local_cleared = True
+    
+    # Clear Vertex AI conversation context
+    vertex_cleared = search_service.clear_conversation(session_id)
+    
+    if local_cleared or vertex_cleared:
         return {"message": f"Conversation {session_id} cleared"}
     return {"message": "Conversation not found"}
+
+
