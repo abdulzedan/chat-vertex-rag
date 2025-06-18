@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, AsyncGenerator
 from datetime import datetime
 import uuid
 import time
@@ -113,6 +113,77 @@ class VertexSearchService:
             logger.error(f"Error in data store initialization: {e}")
             # Don't raise here - continue with existing setup
             logger.info("Continuing with existing data store configuration...")
+    
+    async def generate_response_stream(self, query: str, search_results: List[Dict[str, Any]]) -> AsyncGenerator[str, None]:
+        """Generate streaming response using Gemini with search results"""
+        try:
+            # Group search results by source document and prepare context
+            grouped_results = {}
+            
+            # Dynamic context window based on document diversity
+            unique_docs = len(set(r['filename'] for r in search_results))
+            max_results_to_use = self._calculate_optimal_context_size(unique_docs, len(search_results))
+            logger.info(f"Using {max_results_to_use} search results from {unique_docs} unique documents")
+            
+            # Ensure document diversity in selected results
+            selected_results = self._ensure_document_diversity(search_results[:max_results_to_use], unique_docs)
+            
+            # Group selected results by document
+            for result in selected_results:
+                filename = result['filename']
+                if filename not in grouped_results:
+                    grouped_results[filename] = []
+                grouped_results[filename].append(result)
+            
+            context = ""
+            doc_counter = 1
+            for filename, doc_results in grouped_results.items():
+                context += f"\n--- Document {doc_counter}: {filename} ---\n"
+                for chunk_result in doc_results:
+                    content = chunk_result['content']
+                    context += content + "\n\n"
+                doc_counter += 1
+                context += "\n"
+            
+            if not context.strip():
+                yield "I couldn't find any relevant information in the uploaded documents to answer your question."
+                return
+            
+            # Check context size and truncate if needed
+            if len(context) > 900000:
+                context = self._intelligently_truncate_context(grouped_results, 900000)
+            
+            prompt = f"""Based on the following documents, answer the user's question comprehensively.
+
+Documents:
+{context}
+
+Question: {query}
+
+Please provide a complete answer based on the information in these documents. Include all relevant details, numbers, and context that would be helpful to fully address the question."""
+            
+            # Use streaming generation
+            model = GenerativeModel(os.getenv("GEMINI_MODEL", "gemini-2.0-flash-001"))
+            
+            generation_config = {
+                "max_output_tokens": 8192,
+                "temperature": 0.2,
+                "top_p": 0.8
+            }
+            
+            response_stream = model.generate_content(
+                prompt,
+                generation_config=generation_config,
+                stream=True
+            )
+            
+            for chunk in response_stream:
+                if chunk.text:
+                    yield chunk.text
+                    
+        except Exception as e:
+            logger.error(f"Error generating streaming response: {e}")
+            yield f"Error generating response: {str(e)}"
     
     async def generate_response_direct(self, prompt: str) -> str:
         """Generate a direct response using Gemini without RAG context"""
@@ -542,6 +613,15 @@ class VertexSearchService:
     async def delete_document(self, document_id: str) -> bool:
         """Delete all chunks for a document from the index"""
         try:
+            logger.info(f"Attempting to delete document: {document_id}")
+            
+            # First check if document exists in memory
+            if document_id not in self.documents:
+                logger.warning(f"Document {document_id} not found in memory storage")
+                # Try to find by searching through all documents
+                for doc_id, doc_data in self.documents.items():
+                    logger.debug(f"Available document: {doc_id} - {doc_data.get('filename', 'unknown')}")
+            
             # Delete all associated chunks (no main document to delete)
             deleted_chunks = 0
             chunk_index = 0
@@ -559,8 +639,10 @@ class VertexSearchService:
                     self.client.delete_document(name=chunk_path)
                     deleted_chunks += 1
                     chunk_index += 1
-                except Exception:
+                    logger.debug(f"Deleted chunk: {chunk_id}")
+                except Exception as e:
                     # No more chunks to delete
+                    logger.debug(f"No more chunks to delete after {chunk_index} chunks: {str(e)}")
                     break
             
             if deleted_chunks > 0:

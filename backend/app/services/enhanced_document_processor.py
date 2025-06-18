@@ -75,16 +75,26 @@ class EnhancedDocumentProcessor:
         
         # Optional Document AI processor
         use_document_ai_env = os.getenv("USE_DOCUMENT_AI", "false")
+        use_gemini_fallback_env = os.getenv("USE_GEMINI_FALLBACK", "true")
+        
         logger.info(f"USE_DOCUMENT_AI environment variable: {use_document_ai_env}")
+        logger.info(f"USE_GEMINI_FALLBACK environment variable: {use_gemini_fallback_env}")
         logger.info(f"DOCUMENT_AI_AVAILABLE: {DOCUMENT_AI_AVAILABLE}")
         
         self.use_document_ai = DOCUMENT_AI_AVAILABLE and use_document_ai_env.lower() == "true"
+        self.use_gemini_fallback = use_gemini_fallback_env.lower() == "true"
+        
         if self.use_document_ai:
             self.document_ai = DocumentAIProcessor()
             logger.info("Document AI Layout Parser enabled")
         else:
             self.document_ai = None
             logger.info(f"Using standard document processing (Document AI available: {DOCUMENT_AI_AVAILABLE}, env var: {use_document_ai_env})")
+        
+        if self.use_gemini_fallback:
+            logger.info("Gemini multimodal fallback enabled")
+        else:
+            logger.info("Gemini multimodal fallback disabled - will skip to standard processing")
         
     def _preprocess_text(self, text: str) -> str:
         """Clean and normalize text"""
@@ -625,6 +635,124 @@ class EnhancedDocumentProcessor:
         
         return processed_text, tables
     
+    async def _process_pdf_with_gemini(self, file_path: str, filename: str) -> Tuple[str, List[Dict], Dict]:
+        """Process PDF using Gemini's multimodal capabilities for faster extraction"""
+        try:
+            logger.info(f"Processing PDF with Gemini multimodal: {filename}")
+            
+            # Read PDF file
+            with open(file_path, 'rb') as f:
+                pdf_bytes = f.read()
+            
+            # Check file size - Gemini has a 20MB limit for inline data
+            file_size_mb = len(pdf_bytes) / (1024 * 1024)
+            if file_size_mb > 19:  # Leave some buffer
+                logger.warning(f"PDF too large for Gemini ({file_size_mb:.1f}MB), falling back to standard processing")
+                return None, [], {}
+            
+            # Create Part object for Gemini
+            pdf_part = Part.from_data(
+                mime_type="application/pdf",
+                data=pdf_bytes
+            )
+            
+            # Optimized prompt for fast extraction
+            prompt = """Extract all text content from this PDF document. 
+            
+            Requirements:
+            1. Extract ALL text content including headers, body text, and footnotes
+            2. Preserve the document structure and formatting
+            3. For tables: format them as markdown tables
+            4. Include page numbers as "--- Page X ---" markers
+            5. Extract any important metadata like dates, amounts, percentages
+            
+            Output the complete extracted text."""
+            
+            # Use Gemini 2.0 Flash for optimal speed
+            response = self.vision_model.generate_content([prompt, pdf_part])
+            
+            if response.text:
+                extracted_text = response.text
+                logger.info(f"Gemini extracted {len(extracted_text)} characters from PDF")
+                
+                # Quick table detection
+                tables = []
+                if '|' in extracted_text and '---' in extracted_text:
+                    # Extract markdown tables
+                    table_pattern = r'\|[^\n]+\|(?:\n\|[-\s|]+\|)?(?:\n\|[^\n]+\|)+'
+                    table_matches = re.findall(table_pattern, extracted_text)
+                    for i, table_text in enumerate(table_matches):
+                        tables.append({
+                            'table_index': i,
+                            'content': table_text,
+                            'type': 'markdown'
+                        })
+                
+                # Extract metadata
+                metadata = {
+                    'extraction_method': 'gemini_multimodal',
+                    'has_tables': len(tables) > 0,
+                    'table_count': len(tables)
+                }
+                
+                return extracted_text, tables, metadata
+            else:
+                logger.warning("Gemini returned no text")
+                return None, [], {}
+                
+        except Exception as e:
+            logger.warning(f"Gemini PDF processing failed: {e}")
+            return None, [], {}
+
+    async def _process_image_with_gemini(self, file_path: str, filename: str) -> str:
+        """Process image using Gemini's vision capabilities for OCR"""
+        try:
+            logger.info(f"Processing image with Gemini vision: {filename}")
+            
+            # Read image file
+            with open(file_path, 'rb') as f:
+                image_bytes = f.read()
+            
+            # Check file size - Gemini has a 20MB limit
+            file_size_mb = len(image_bytes) / (1024 * 1024)
+            if file_size_mb > 19:
+                logger.warning(f"Image too large for Gemini ({file_size_mb:.1f}MB)")
+                return None
+            
+            # Determine MIME type
+            mime_type = "image/png" if filename.lower().endswith('.png') else "image/jpeg"
+            
+            # Create Part object for Gemini
+            image_part = Part.from_data(
+                mime_type=mime_type,
+                data=image_bytes
+            )
+            
+            # Optimized prompt for OCR
+            prompt = """Extract all text from this image with high accuracy.
+            
+            Requirements:
+            1. Extract ALL visible text including headers, body text, labels, captions
+            2. Preserve the reading order and structure as much as possible
+            3. For tables or structured data: format as markdown tables
+            4. Include any numbers, dates, or special characters exactly as shown
+            5. If there's no text in the image, respond with "No text detected"
+            
+            Output only the extracted text."""
+            
+            response = self.vision_model.generate_content([prompt, image_part])
+            
+            if response.text and response.text.strip() != "No text detected":
+                logger.info(f"Gemini extracted {len(response.text)} characters from image")
+                return response.text
+            else:
+                logger.info("No text found in image")
+                return ""
+                
+        except Exception as e:
+            logger.warning(f"Gemini image processing failed: {e}")
+            return None
+
     async def process_file(self, file_path: str, file_type: str, filename: str) -> Dict[str, Any]:
         """Process a file with enhanced extraction and chunking"""
         try:
@@ -634,7 +762,15 @@ class EnhancedDocumentProcessor:
             additional_info = {}
             
             if file_type == "application/pdf":
-                # Use Document AI if available and enabled for PDFs
+                # Processing hierarchy:
+                # 1. Document AI (if enabled) - best for complex documents
+                # 2. Gemini multimodal - fast fallback
+                # 3. PyPDF2 - basic fallback
+                
+                text = ""
+                processed_successfully = False
+                
+                # Try Document AI first if enabled
                 if self.use_document_ai and self.document_ai:
                     try:
                         logger.info("Processing PDF with Document AI Layout Parser")
@@ -701,16 +837,52 @@ class EnhancedDocumentProcessor:
                             'document_ai_chunks': doc_ai_result['chunks'],
                             'tables': doc_ai_result['tables'],
                             'entities': doc_ai_result['metadata']['entities'],
-                            'document_ai_used': True
+                            'document_ai_used': True,
+                            'extraction_method': 'document_ai'
                         }
+                        processed_successfully = True
                         logger.info(f"Document AI processing successful: {len(doc_ai_result['chunks'])} chunks, {len(doc_ai_result['tables'])} tables")
                     except Exception as e:
-                        logger.warning(f"Document AI processing failed, falling back to standard: {e}")
-                        text, additional_info = await self._extract_pdf_text_enhanced(file_path)
-                else:
+                        logger.warning(f"Document AI processing failed: {e}")
+                
+                # Fallback to Gemini multimodal if Document AI failed or not enabled AND Gemini fallback is enabled
+                if not processed_successfully and self.use_gemini_fallback:
+                    logger.info("Trying Gemini multimodal as fallback")
+                    gemini_text, gemini_tables, gemini_metadata = await self._process_pdf_with_gemini(file_path, filename)
+                    
+                    if gemini_text:
+                        text = gemini_text
+                        additional_info = {
+                            'tables': gemini_tables,
+                            'has_tables': len(gemini_tables) > 0,
+                            'page_count': text.count('--- Page '),
+                            'extraction_method': 'gemini_multimodal'
+                        }
+                        additional_info.update(gemini_metadata)
+                        processed_successfully = True
+                        logger.info("Gemini multimodal processing successful")
+                
+                # Final fallback to PyPDF2
+                if not processed_successfully:
+                    logger.info("Falling back to PyPDF2 standard processing")
                     text, additional_info = await self._extract_pdf_text_enhanced(file_path)
+                    additional_info['extraction_method'] = 'pypdf2'
             elif file_type in ["image/png", "image/jpeg", "image/jpg"]:
-                text = await self._extract_image_text(file_path)
+                # Try Gemini vision first for better OCR if enabled
+                if self.use_gemini_fallback:
+                    text = await self._process_image_with_gemini(file_path, filename)
+                    if text is not None:
+                        additional_info['extraction_method'] = 'gemini_vision'
+                    else:
+                        # Fallback to existing OCR method
+                        logger.info("Gemini vision failed, falling back to standard image OCR")
+                        text = await self._extract_image_text(file_path)
+                        additional_info['extraction_method'] = 'standard_ocr'
+                else:
+                    # Skip Gemini and go directly to standard OCR
+                    logger.info("Using standard image OCR (Gemini fallback disabled)")
+                    text = await self._extract_image_text(file_path)
+                    additional_info['extraction_method'] = 'standard_ocr'
             elif file_type == "text/csv":
                 text = await self._extract_csv_text_enhanced(file_path)
             elif file_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":

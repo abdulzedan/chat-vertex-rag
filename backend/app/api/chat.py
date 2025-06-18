@@ -88,24 +88,12 @@ async def query_endpoint(request: QueryRequest):
                 else:
                     logger.info(f"Found {len(search_results)} relevant documents")
                     # Generate response with conversation context
-                    response_text = await _generate_contextual_response(
+                    # Use streaming response generation
+                    response_gen = _generate_contextual_response_stream(
                         question=request.question,
                         search_results=search_results,
                         session_id=session_id
                     )
-                
-                # Store conversation turn
-                _store_conversation_turn(session_id, request.question, response_text)
-                
-                # Convert to async generator for streaming
-                async def response_generator():
-                    # Split response into chunks for streaming effect
-                    words = response_text.split(' ')
-                    for i in range(0, len(words), 5):  # Send 5 words at a time
-                        chunk = ' '.join(words[i:i+5]) + ' '
-                        yield chunk
-                        
-                response_gen = response_generator()
             else:
                 if document_ids:
                     logger.info("No documents found in selected documents")
@@ -394,6 +382,33 @@ async def _enhanced_document_search(
     
     return search_results
 
+
+async def _generate_contextual_response_stream(
+    question: str,
+    search_results: List[Dict],
+    session_id: str
+) -> AsyncGenerator[str, None]:
+    """Generate streaming response with conversation context"""
+    
+    # Get conversation history for context but don't store yet
+    conversation_history = conversation_memory.get(session_id, [])
+    
+    # Build conversation context if available
+    conversation_context = ""
+    if conversation_history:
+        recent_turn = conversation_history[-1]
+        conversation_context = f"\n\nPrevious conversation context:\n"
+        conversation_context += f"Previous User Question: {recent_turn['question']}\n"
+        conversation_context += f"Previous Assistant Response: {recent_turn['response']}\n\n"
+    
+    # Prepare the search results with conversation context
+    full_response = ""
+    async for chunk in search_service.generate_response_stream(question, search_results):
+        full_response += chunk
+        yield chunk
+    
+    # Store conversation turn after streaming is complete
+    _store_conversation_turn(session_id, question, full_response)
 
 async def _generate_contextual_response(
     question: str,

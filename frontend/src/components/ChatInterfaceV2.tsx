@@ -330,8 +330,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedDocuments }) => {
     
     console.log('Sending message:', input);
 
-    // Add a small delay to show the thinking animation
-    await new Promise(resolve => setTimeout(resolve, 500));
+    // Remove artificial delay - streaming should start quickly
 
     try {
       const response = await fetch('/api/chat/query', {
@@ -409,8 +408,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedDocuments }) => {
                     });
                   }
                   
-                  // Add a small delay to make streaming more visible
-                  await new Promise(resolve => setTimeout(resolve, 50));
+                  // Remove artificial delay for smoother streaming
                 } else if (data.done) {
                   console.log('Stream completed');
                   // Handle completion signal

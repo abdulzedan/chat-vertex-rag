@@ -1,146 +1,249 @@
-# NotebookLM RAG Demo
+# RAG Engine Demo
 
-A proof-of-concept RAG (Retrieval Augmented Generation) application using Google Cloud Platform's Vertex AI RAG Engine and Gemini 2.0 Flash. This demo replicates Google's NotebookLM experience for document Q&A.
+A NotebookLM-inspired document Q&A application powered by Google Cloud Vertex AI Search and Gemini 2.0 Flash. Upload documents, select which ones to search, and have intelligent conversations about their content.
 
-## Features
+## 🚀 Features
 
-- **Document Upload**: Support for PDFs, images (PNG, JPG), and CSV files
-- **Automatic Processing**: Vertex AI RAG Engine handles chunking and embedding automatically
-- **Real-time Chat**: Ask questions about your documents with streaming responses
-- **Modern UI**: Clean interface with document list, viewer, and slide-out chat
-- **Fully Managed**: No database setup required - uses Vertex AI's managed RAG service
+### 📄 Multi-Format Document Support
+- **PDFs**: Advanced processing with Document AI Layout Parser and Gemini Vision
+- **Images**: OCR text extraction with Gemini Vision capabilities  
+- **CSV/Excel**: Table-aware processing with markdown formatting
+- **Word Documents**: Structure-preserving extraction
+- **Plain Text**: Multi-encoding support
 
-## Prerequisites
+### 🔍 Intelligent Search & Chat
+- **Multi-Document Queries**: Select specific documents or search across all
+- **Conversation Context**: Follow-up questions that remember previous context
+- **Streaming Responses**: Real-time response generation with typing indicators
+- **Rich Formatting**: Tables, citations, lists, and code blocks in responses
+- **Document Citations**: Automatic source attribution and references
 
+### 🎯 Advanced Processing
+- **Hierarchical Processing**: Document AI → Gemini Multimodal → Standard libraries
+- **Table-Aware Chunking**: Preserves table integrity across document chunks
+- **Semantic Chunking**: Intelligent text segmentation with context preservation
+- **Entity Extraction**: Automatic extraction of dates, percentages, currency, etc.
+
+## 🛠 Quick Start
+
+### Prerequisites
 - Python 3.9+
-- Node.js 18+
-- Google Cloud Project with billing enabled
-- Service account with Vertex AI permissions
+- Node.js 16+
+- Google Cloud Project with Vertex AI enabled
+- Google Cloud credentials configured
 
-## Setup Instructions
-
-### 1. Enable GCP APIs
-
-```bash
-gcloud services enable aiplatform.googleapis.com
-gcloud services enable storage.googleapis.com
-```
-
-### 2. Set up Authentication
-
-```bash
-# For local development, simply run:
-gcloud auth application-default login
-
-# Make sure you're using the correct project
-gcloud config set project YOUR_PROJECT_ID
-```
-
-### 3. Backend Setup
+### 1. Backend Setup
 
 ```bash
 cd backend
-
-# Create virtual environment
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
+source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
+```
 
-# Set up environment variables
-cp .env.example .env
-# Edit .env with your values:
-# GCP_PROJECT_ID=your-project-id
-# GCP_LOCATION=us-central1
+### 2. Environment Configuration
 
-# Run the backend
-uvicorn app.main:app --reload --port 8000
+Create `.env` file in the backend directory:
+
+```bash
+# Required
+GCP_PROJECT_ID=your-project-id
+GCP_LOCATION=us-central1
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+
+# Optional optimizations
+USE_DOCUMENT_AI=false
+USE_VERTEX_RANKING=false
+USE_VERTEX_GROUNDING=false
+GEMINI_MODEL=gemini-2.0-flash-001
+```
+
+### 3. Start Backend Server
+
+```bash
+uvicorn app.main:app --reload --port 8000 --timeout-keep-alive 600
 ```
 
 ### 4. Frontend Setup
 
 ```bash
 cd frontend
-
-# Install dependencies
 npm install
-
-# Run the development server
-npm run dev
+npm run dev  # Development server on port 3000
 ```
 
-The application will be available at http://localhost:3000
+### 5. Access Application
 
-## Usage
+Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-1. **Upload Documents**: Click "Upload Document" in the left sidebar and drag & drop or select files
-2. **View Documents**: Click on any document in the list to select it
-3. **Ask Questions**: Click the chat button (bottom right) to open the Q&A interface
-4. **Get Answers**: Type your question and get AI-powered answers based on your documents
+## 📖 Usage Guide
 
-## Architecture
+### Document Management
+1. **Upload Documents**: Drag and drop files or click to browse
+2. **View Documents**: Click on any document to preview (if supported)
+3. **Select for Search**: Use checkboxes to choose which documents to query
+4. **Delete Documents**: Individual or bulk deletion options
 
-### Backend (FastAPI)
-- `app/services/rag_engine.py`: Vertex AI RAG Engine integration
-- `app/services/document_uploader.py`: Document processing logic
-- `app/api/documents.py`: Document management endpoints
-- `app/api/chat.py`: Query and chat endpoints with SSE streaming
+### Chat Interface  
+1. **Open Chat**: Click the chat button (top-right) after selecting documents
+2. **Ask Questions**: Type questions about your selected documents
+3. **Follow-up Questions**: Ask related questions that build on previous responses
+4. **Copy Responses**: Click copy button on any response
+5. **Clear Chat**: Reset conversation context when needed
 
-### Frontend (React + TypeScript)
-- `components/DocumentList.tsx`: Document management interface
-- `components/DocumentViewer.tsx`: Document preview placeholder
-- `components/ChatInterface.tsx`: Real-time Q&A chat
-- `components/FileUploader.tsx`: Drag-and-drop file upload
+### Example Queries
+- "What are the main points in this document?"
+- "Compare the pricing between these two documents"
+- "What percentage increases are mentioned?"
+- "Summarize the key findings from the research"
 
-## Performance Notes
+## 🔧 Configuration Options
 
-- For <100 documents, the RAG Engine provides excellent performance
-- Initial document processing typically takes ~10 seconds
-- Query responses stream in real-time
-- For very small document sets (<10 docs), consider using direct context instead of RAG
+### Document AI Enhancement
+Enable Document AI for better PDF processing:
+```bash
+USE_DOCUMENT_AI=true
+```
 
-## Troubleshooting
+### Response Quality Improvements
+```bash
+USE_VERTEX_RANKING=true      # Better result ranking
+USE_VERTEX_GROUNDING=true    # Response validation
+```
+
+### Model Selection
+```bash
+GEMINI_MODEL=gemini-2.0-flash-001    # Default (fastest)
+GEMINI_MODEL=gemini-1.5-pro          # Higher quality
+```
+
+## 📊 Supported File Types
+
+| Format | Extensions | Processing Method |
+|--------|------------|-------------------|
+| PDF | `.pdf` | Document AI → Gemini Vision → PyPDF2 |
+| Images | `.png`, `.jpg`, `.jpeg` | Gemini Vision → Standard OCR |
+| CSV | `.csv` | Enhanced parser with table formatting |
+| Word | `.docx` | Structure-preserving extraction |
+| Excel | `.xlsx` | Multi-sheet processing |
+| Text | `.txt` | Multi-encoding support |
+
+## 🏗 Architecture Overview
+
+```
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   React Frontend│    │   FastAPI Backend│    │  Google Cloud   │
+│                 │    │                  │    │                 │
+│ • Document List │────│ • Upload API     │────│ • Vertex AI     │
+│ • Chat Interface│    │ • Search API     │    │ • Gemini 2.0    │
+│ • File Upload   │    │ • Streaming      │    │ • Document AI   │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
+```
+
+## 🧪 Development
+
+### Running Tests
+
+```bash
+# Backend tests
+cd backend
+pytest
+
+# Frontend tests  
+cd frontend
+npm test
+```
+
+### Building for Production
+
+```bash
+# Frontend build
+cd frontend
+npm run build
+
+# Backend dependencies
+cd backend
+pip install -r requirements.txt
+```
+
+### Code Quality
+
+```bash
+# Frontend linting
+cd frontend
+npm run lint
+
+# Backend formatting (if configured)
+cd backend
+ruff check app/
+```
+
+## 🚨 Troubleshooting
 
 ### Common Issues
 
-1. **"RAG corpus not initialized"**
-   - The RAG corpus is created automatically on first startup
-   - Check your GCP credentials and project permissions
+**"No documents found"**
+- Check that documents are successfully uploaded and indexed
+- Verify Google Cloud credentials are properly configured
+- Ensure Vertex AI Search data store is created
 
-2. **Upload failures**
-   - Ensure the backend is running on port 8000
-   - Check file size limits (default: 10MB)
-   - Verify supported file types: PDF, PNG, JPG, CSV
+**Slow document processing**
+- Enable Document AI for better PDF processing
+- Check file sizes (20MB limit for Gemini processing)
+- Monitor backend logs for processing method used
 
-3. **No streaming responses**
-   - Check browser console for WebSocket errors
-   - Ensure your proxy configuration is correct in vite.config.ts
+**Streaming not working**
+- Verify proxy configuration in frontend for SSE
+- Check network configuration allows Server-Sent Events
+- Ensure backend streaming headers are properly set
 
-## Development
+**Authentication errors**
+- Verify `GOOGLE_APPLICATION_CREDENTIALS` points to valid service account
+- Ensure service account has Vertex AI permissions
+- Check that Vertex AI APIs are enabled in your GCP project
 
-### Adding New File Types
+### Log Analysis
 
-1. Update `allowed_types` in `backend/app/api/documents.py`
-2. Add processing logic in `backend/app/services/document_uploader.py`
-3. Update frontend file acceptance in `FileUploader.tsx`
-
-### Customizing the UI
-
-The frontend uses shadcn/ui components with Tailwind CSS. To add new components:
-
-```bash
-npx shadcn@latest add [component-name]
+Backend logs show processing hierarchy:
+```
+INFO: Processing PDF with Document AI Layout Parser    # Best quality
+INFO: Trying Gemini multimodal as fallback           # Fast fallback  
+INFO: Falling back to PyPDF2 standard processing     # Basic fallback
 ```
 
-## Production Considerations
+## 📝 API Documentation
 
-1. **Authentication**: Add Google Cloud IAM or custom auth
-2. **Rate Limiting**: Implement API rate limits
-3. **Monitoring**: Set up Cloud Logging and Monitoring
-4. **Scaling**: Deploy backend to Cloud Run, frontend to Cloud CDN
-5. **Security**: Enable CORS restrictions, validate file uploads
+### Document Endpoints
+- `POST /api/documents/upload` - Upload and process documents
+- `GET /api/documents/` - List all documents  
+- `DELETE /api/documents/{id}` - Delete specific document
 
-## License
+### Chat Endpoints
+- `POST /api/chat/query` - Streaming query with SSE
+- `GET /api/conversations/{session_id}` - Get conversation history
+- `DELETE /api/conversations/{session_id}` - Clear conversation
 
-This is a demo project for educational purposes.
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🆘 Support
+
+For questions and support:
+- 📧 Email: [your-email@example.com]
+- 💬 GitHub Issues: [Create an issue](https://github.com/your-repo/issues)
+- 📖 Documentation: See `TECHNICAL_GUIDE.md` for detailed technical information
+
+## 🙏 Acknowledgments
+
+- Built with Google Cloud Vertex AI and Gemini
+- UI components from [shadcn/ui](https://ui.shadcn.com/)
+- Inspired by Google's NotebookLM

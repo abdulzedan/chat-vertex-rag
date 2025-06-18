@@ -159,12 +159,13 @@ const DocumentList: React.FC<DocumentListProps> = ({
               <AlertDialog>
                 <AlertDialogTrigger asChild>
                   <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
-                    title="Clear all documents"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 text-xs text-destructive hover:text-destructive hover:bg-destructive/10 border-destructive/20"
+                    title="Clear all documents from the system"
                   >
-                    <Trash2 className="h-4 w-4" />
+                    <Trash2 className="h-3 w-3 mr-1" />
+                    Clear All
                   </Button>
                 </AlertDialogTrigger>
                 <AlertDialogContent>
@@ -305,7 +306,7 @@ const DocumentList: React.FC<DocumentListProps> = ({
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-8 w-8 opacity-0 hover:opacity-100"
+                      className="h-8 w-8 opacity-60 hover:opacity-100"
                       onClick={() => onViewDocument(doc)}
                       title="View document"
                     >
@@ -314,9 +315,9 @@ const DocumentList: React.FC<DocumentListProps> = ({
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-8 w-8 opacity-0 hover:opacity-100 text-destructive hover:text-destructive"
+                      className="h-8 w-8 opacity-60 hover:opacity-100 text-destructive hover:text-destructive"
                       onClick={(e) => handleDelete(doc.id, doc.display_name, e)}
-                      title="Delete document"
+                      title="Delete this document"
                     >
                       <Trash2 className="h-4 w-4" />
                     </Button>
