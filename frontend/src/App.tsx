@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import DocumentList from '@/components/DocumentList';
 import DocumentViewer from '@/components/DocumentViewer';
-import ChatInterface from '@/components/ChatInterfaceV2';
+import ChatInterface from '@/components/ChatInterface';
 import { Document } from '@/types';
 
 function App() {

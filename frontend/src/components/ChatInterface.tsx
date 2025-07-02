@@ -457,10 +457,10 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedDocuments }) => {
       <div className="fixed top-4 right-4 z-50">
         <Button
           onClick={() => setOpen(true)}
-          className="relative rounded-full h-12 w-12 shadow-lg transition-all duration-200 hover:scale-105"
+          className="relative rounded-full h-12 w-12 shadow-lg transition-all duration-200 hover:scale-105 bg-white hover:bg-gray-50 border-0"
           size="icon"
         >
-          <img src="/logos/pineapple.png" alt="Chat" className="h-6 w-6" />
+          <img src="/logos/gemini-logo.svg" alt="Chat" className="h-6 w-6" />
           {selectedDocuments.length > 0 && (
             <Badge 
               variant="destructive" 
@@ -522,7 +522,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedDocuments }) => {
             <div className="space-y-4">
               {messages.length === 0 ? (
                 <div className="text-center text-muted-foreground py-8">
-                  <img src="/logos/pineapple.png" alt="Chat" className="h-12 w-12 mx-auto mb-3 opacity-50" />
+                  <div className="bg-white rounded-full p-2 mx-auto mb-3 w-16 h-16 flex items-center justify-center shadow-sm">
+                    <img src="/logos/gemini-logo.svg" alt="Chat" className="h-10 w-10" />
+                  </div>
                   <p>Ask questions about your documents</p>
                   <p className="text-xs mt-2">Tables, rates, and data will be formatted clearly</p>
                 </div>

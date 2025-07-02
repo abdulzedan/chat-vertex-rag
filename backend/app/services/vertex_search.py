@@ -27,10 +27,10 @@ class VertexSearchService:
     """Fast document indexing and retrieval using Vertex AI Search with enhanced local fallback"""
     
     def __init__(self):
-        self.project_id = "main-env-demo"  # Use the correct project ID directly
+        self.project_id = os.getenv("GCP_PROJECT_ID", "your-project-id")
         self.location = "global"  # Vertex AI Search uses global location
-        self.data_store_id = "notebooklm-demo-datastore"
-        self.app_id = "notebooklm-enterprise-app_1749830515712"  # Enterprise app ID
+        self.data_store_id = os.getenv("VERTEX_SEARCH_DATASTORE_ID", "rag-demo-datastore")
+        self.app_id = os.getenv("VERTEX_SEARCH_APP_ID", "rag-demo-app")  # Enterprise app ID
         self.serving_config_id = "default_config"
         
         # In-memory storage for document metadata only (not for search)
@@ -89,7 +89,7 @@ class VertexSearchService:
             )
             
             data_store = discoveryengine.DataStore(
-                display_name="NotebookLM Demo Data Store",
+                display_name="RAG Demo Data Store",
                 industry_vertical=discoveryengine.IndustryVertical.GENERIC,
                 solution_types=[discoveryengine.SolutionType.SOLUTION_TYPE_SEARCH],
                 content_config=discoveryengine.DataStore.ContentConfig.CONTENT_REQUIRED,
