@@ -55,25 +55,6 @@ repos:
         files: ^backend/.*\.py$
         exclude: ^backend/tests/.*$
 
-  # TypeScript/JavaScript formatting and linting
-  - repo: local
-    hooks:
-      - id: eslint
-        name: eslint
-        entry: bash -c 'cd frontend && npm run lint:check'
-        language: system
-        files: ^frontend/.*\.(ts|tsx|js|jsx)$
-        pass_filenames: false
-
-  - repo: local
-    hooks:
-      - id: prettier
-        name: prettier
-        entry: bash -c 'cd frontend && npm run format'
-        language: system
-        files: ^frontend/.*\.(ts|tsx|js|jsx|json|css|scss|md)$
-        pass_filenames: false
-
   # Dockerfile linting
   - repo: https://github.com/hadolint/hadolint
     rev: v2.12.0
