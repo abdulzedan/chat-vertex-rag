@@ -948,13 +948,14 @@ Please provide a complete answer based on the information in these documents. In
                         ):
                             try:
                                 logger.info("Checking response grounding")
-                                is_grounded, grounding_result = (
-                                    await self.grounding_service.validate_response(
-                                        query=query,
-                                        response=response_text,
-                                        source_documents=search_results,
-                                        min_support_score=0.7,
-                                    )
+                                (
+                                    is_grounded,
+                                    grounding_result,
+                                ) = await self.grounding_service.validate_response(
+                                    query=query,
+                                    response=response_text,
+                                    source_documents=search_results,
+                                    min_support_score=0.7,
                                 )
 
                                 if is_grounded:
@@ -980,9 +981,9 @@ Please provide a complete answer based on the information in these documents. In
                         error_msg = str(e).lower()
                         if "unavailable" in error_msg or "503" in error_msg:
                             if attempt < max_retries - 1:
-                                wait_time = retry_delay * (
-                                    2**attempt
-                                ) + random.uniform(0, 1)
+                                wait_time = retry_delay * (2**attempt) + random.uniform(
+                                    0, 1
+                                )
                                 logger.warning(
                                     f"{model_name} unavailable, retrying in {wait_time:.2f} seconds... (attempt {attempt + 1}/{max_retries})"
                                 )
