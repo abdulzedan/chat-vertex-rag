@@ -31,8 +31,11 @@ A Retrieval-Augmented Generation (RAG) application that enables intelligent docu
    # Required
    GCP_PROJECT_ID=your-project-id
    GCP_LOCATION=us-central1
-   GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
    GEMINI_MODEL=gemini-2.0-flash-001
+   
+   # Vertex AI Search (created by setup-gcp.sh)
+   VERTEX_SEARCH_DATASTORE_ID=rag-demo-datastore
+   VERTEX_SEARCH_APP_ID=rag-demo-app
    
    # Optional (set to true for better quality)
    USE_DOCUMENT_AI=false       # Advanced PDF processing
@@ -40,7 +43,16 @@ A Retrieval-Augmented Generation (RAG) application that enables intelligent docu
    USE_VERTEX_GROUNDING=false  # Response validation
    ```
 
-3. **Start servers**:
+3. **Google Cloud Setup**:
+   ```bash
+   # Setup GCP resources (run once)
+   ./scripts/setup-gcp.sh
+   
+   # Setup authentication
+   gcloud auth application-default login
+   ```
+
+4. **Start servers**:
    ```bash
    # Backend
    uvicorn app.main:app --reload --port 8000
@@ -49,7 +61,7 @@ A Retrieval-Augmented Generation (RAG) application that enables intelligent docu
    cd frontend && npm install && npm run dev
    ```
 
-4. **Open**: [http://localhost:3000](http://localhost:3000)
+5. **Open**: [http://localhost:3000](http://localhost:3000)
 
 ## Supported File Types
 
@@ -103,7 +115,7 @@ Upload → Document Processing → Chunking → Metadata Extraction → Index in
 ### Quick Setup
 ```bash
 # Automated setup (recommended)
-./setup-dev.sh
+./scripts/setup-dev.sh
 
 # Manual setup
 cd backend && python -m venv venv && source venv/bin/activate && pip install -e ".[dev]"
