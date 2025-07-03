@@ -972,9 +972,11 @@ class EnhancedDocumentProcessor:
                 # Fallback to Gemini multimodal if Document AI failed or not enabled AND Gemini fallback is enabled
                 if not processed_successfully and self.use_gemini_fallback:
                     logger.info("Trying Gemini multimodal as fallback")
-                    gemini_text, gemini_tables, gemini_metadata = (
-                        await self._process_pdf_with_gemini(file_path, filename)
-                    )
+                    (
+                        gemini_text,
+                        gemini_tables,
+                        gemini_metadata,
+                    ) = await self._process_pdf_with_gemini(file_path, filename)
 
                     if gemini_text:
                         text = gemini_text
