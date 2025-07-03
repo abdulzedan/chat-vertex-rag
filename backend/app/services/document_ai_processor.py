@@ -162,7 +162,7 @@ class DocumentAIProcessor:
                         chunks.append(page_text)
                         chunk_details.append(
                             {
-                                "chunk_id": f"page_{i+1}",
+                                "chunk_id": f"page_{i + 1}",
                                 "type": "page",
                                 "page_number": page.page_number,
                             }

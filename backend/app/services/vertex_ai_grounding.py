@@ -50,7 +50,7 @@ class VertexAIGroundingService:
                     fact_text=fact[:10000],
                     attributes={
                         "id": str(i),
-                        "source": f"Document {i+1}",
+                        "source": f"Document {i + 1}",
                     },  # Limit fact length
                 )
                 grounding_facts.append(grounding_fact)
@@ -223,7 +223,7 @@ class VertexAIGroundingService:
         if grounding_result.get("cited_chunks"):
             formatted += "\n\n**Sources:**"
             for i, chunk in enumerate(grounding_result["cited_chunks"]):
-                source = chunk.get("source", f"Document {i+1}")
+                source = chunk.get("source", f"Document {i + 1}")
                 formatted += f"\n[{i}] {source}"
 
         return formatted

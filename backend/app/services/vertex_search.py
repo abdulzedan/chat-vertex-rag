@@ -1122,7 +1122,7 @@ Please provide a complete answer based on the information in these documents. In
                 "parent_document_id": document_id,
                 "chunk_index": i,
                 "chunk_type": chunk_type,
-                "title": f"{filename} - Chunk {i+1}",
+                "title": f"{filename} - Chunk {i + 1}",
                 "content": chunk_text,
                 "filename": filename,
                 "file_type": metadata.get("file_type", "unknown"),
@@ -1176,7 +1176,7 @@ Please provide a complete answer based on the information in these documents. In
                 )
                 chunk_ids.append(chunk_id)
                 logger.debug(
-                    f"Indexed chunk {i+1}/{len(chunks)}: {chunk_id} (type: {chunk_type})"
+                    f"Indexed chunk {i + 1}/{len(chunks)}: {chunk_id} (type: {chunk_type})"
                 )
             except Exception as e:
                 logger.warning(f"Failed to index chunk {chunk_id}: {e}")

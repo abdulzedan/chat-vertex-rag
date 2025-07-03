@@ -122,7 +122,7 @@ class VertexAIRankingService:
             # Convert chunks to documents format
             documents = []
             for i, chunk in enumerate(chunks):
-                doc = {"content": chunk, "title": f"Chunk {i+1}"}
+                doc = {"content": chunk, "title": f"Chunk {i + 1}"}
                 if metadata and i < len(metadata):
                     doc.update(metadata[i])
                 documents.append(doc)

@@ -547,11 +547,11 @@ class EnhancedDocumentProcessor:
         table_boundaries = []
         for i, _table in enumerate(tables):
             # Find where each table appears in the text
-            table_marker = f"=== TABLE {i+1} ==="
+            table_marker = f"=== TABLE {i + 1} ==="
             start_pos = text.find(table_marker)
             if start_pos != -1:
                 # Find the end of this table (start of next table or end of text)
-                next_table_marker = f"=== TABLE {i+2} ==="
+                next_table_marker = f"=== TABLE {i + 2} ==="
                 end_pos = text.find(next_table_marker, start_pos)
                 if end_pos == -1:
                     # This is the last table, find end by looking for non-table content
@@ -895,7 +895,7 @@ class EnhancedDocumentProcessor:
                                     f"Table {i}: {len(table.get('headers', []))} header rows, {len(table.get('rows', []))} data rows"
                                 )
 
-                                table_text = f"\n\n=== TABLE {i+1} ===\n"
+                                table_text = f"\n\n=== TABLE {i + 1} ===\n"
 
                                 # Create proper markdown table
                                 all_rows = []
@@ -1211,7 +1211,7 @@ class EnhancedDocumentProcessor:
             if has_tables:
                 text += "\n\nTables:\n"
                 for i, table in enumerate(doc.tables):
-                    text += f"\nTable {i+1}:\n"
+                    text += f"\nTable {i + 1}:\n"
 
                     # Get table data
                     table_data = []
