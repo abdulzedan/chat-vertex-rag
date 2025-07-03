@@ -40,9 +40,6 @@ jobs:
       - name: Run Ruff formatter
         run: ruff format app/ --check
 
-      - name: Run Black formatter
-        run: black --check app/
-
       - name: Run isort
         run: isort --check-only app/
 
