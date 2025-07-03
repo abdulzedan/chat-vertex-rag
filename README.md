@@ -51,6 +51,13 @@ A Retrieval-Augmented Generation (RAG) application that enables intelligent docu
    # Setup authentication
    gcloud auth application-default login
    ```
+   
+   **Manual Vertex AI Search Setup** (if CLI commands unavailable):
+   - The setup script will guide you to create resources manually via Cloud Console
+   - Go to: [Vertex AI Search Console](https://console.cloud.google.com/vertex-ai/search)
+   - Create a Search App: "RAG Demo Search App" (Generic/Search type)
+   - Create a Data Store: "rag-demo-datastore" (Unstructured documents/Global)
+   - Update `backend/.env` with the actual resource IDs provided by the console
 
 4. **Start servers**:
    ```bash
@@ -155,18 +162,65 @@ cd frontend && npm run lint && npm run format
 - `GET /api/conversations/{session_id}` - Get conversation history
 - `DELETE /api/conversations/{session_id}` - Clear conversation
 
+## Google Cloud Resources
+
+### Required GCP Setup
+The `./scripts/setup-gcp.sh` script handles:
+
+**Automatic Setup:**
+- Enables required APIs: Vertex AI, Discovery Engine, Document AI, Storage
+- Verifies authentication and permissions
+- Sets up Application Default Credentials
+
+**Manual Setup Required:**
+- **Vertex AI Search Data Store**: Stores and indexes your documents
+- **Vertex AI Search App**: Provides the search interface and ranking
+- **Resource IDs**: Must be added to your `backend/.env` file
+
+### Step-by-Step Manual Setup
+
+1. **Run the setup script first**:
+   ```bash
+   ./scripts/setup-gcp.sh
+   ```
+
+2. **Follow the manual setup instructions** (displayed by script):
+   - Visit: https://console.cloud.google.com/vertex-ai/search
+   - Create Search App → Name: "RAG Demo Search App" → Type: Generic/Search
+   - Create Data Store → Name: "rag-demo-datastore" → Type: Unstructured/Global
+
+3. **Update your `.env` file** with the actual IDs:
+   ```bash
+   VERTEX_SEARCH_DATASTORE_ID=your-actual-datastore-id
+   VERTEX_SEARCH_APP_ID=your-actual-app-id
+   ```
+
+### Required Permissions
+Your GCP user account needs:
+- `roles/owner` OR `roles/editor` OR these specific roles:
+  - `roles/aiplatform.user` (Vertex AI)
+  - `roles/discoveryengine.admin` (Vertex AI Search)
+  - `roles/documentai.editor` (Document AI - optional)
+  - `roles/storage.objectAdmin` (Cloud Storage)
+
 ## Troubleshooting
 
 **"No documents found"**
 - Verify Google Cloud credentials and Vertex AI Search data store creation
+- Check that resource IDs in `.env` match your actual GCP resources
 
 **Authentication errors**  
-- Ensure `GOOGLE_APPLICATION_CREDENTIALS` points to valid service account
-- Check that Vertex AI APIs are enabled in your GCP project
+- Run `gcloud auth application-default login` to set up authentication
+- Check that Vertex AI APIs are enabled: `gcloud services list --enabled --filter="vertex"`
 
 **Slow processing**
 - Enable Document AI for better PDF processing (`USE_DOCUMENT_AI=true`)
 - Check file sizes (20MB limit for Gemini processing)
+
+**Setup script issues**
+- Ensure you have Owner/Editor role in your GCP project
+- Verify gcloud CLI is installed and authenticated
+- Check that your project has billing enabled
 
 ## License
 
