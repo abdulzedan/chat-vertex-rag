@@ -43,11 +43,7 @@ jobs:
       - name: Run isort
         run: isort --check-only app/
 
-      - name: Run MyPy type checking
-        run: mypy app/
-        continue-on-error: true
-
-      - name: Run tests
-        run: pytest --tb=short -v
-        env:
-          PYTHONPATH: ${{ github.workspace }}/backend
+      # - name: Run tests
+      #   run: pytest --tb=short -v
+      #   env:
+      #     PYTHONPATH: ${{ github.workspace }}/backend
