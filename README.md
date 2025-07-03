@@ -210,41 +210,92 @@ Each chunk is enriched with structured metadata:
 
 ## 🧪 Development
 
+### Quick Setup
+
+```bash
+# Automated setup (recommended)
+./setup-dev.sh
+
+# Manual setup
+cd backend && python -m venv venv && source venv/bin/activate && pip install -e ".[dev]" && cd ..
+cd frontend && npm install && cd ..
+pre-commit install && pre-commit install --hook-type commit-msg
+```
+
+### Running the Application
+
+```bash
+# Backend (from project root)
+cd backend && source venv/bin/activate && uvicorn app.main:app --reload --port 8000
+
+# Frontend (from project root)  
+cd frontend && npm run dev
+```
+
+### Code Quality & Linting
+
+The project uses pre-commit hooks for automatic code quality checks:
+
+```bash
+# Run all quality checks
+pre-commit run --all-files
+
+# Backend linting & formatting
+cd backend && source venv/bin/activate
+ruff check app/ --fix          # Lint and auto-fix
+ruff format app/               # Format code
+black app/                     # Alternative formatter
+isort app/                     # Sort imports
+mypy app/                      # Type checking
+bandit -r app/                 # Security scan
+
+# Frontend linting & formatting
+cd frontend
+npm run lint                   # Lint and auto-fix
+npm run lint:check            # Check only (no fixes)
+npm run format                # Format with Prettier
+npm run format:check          # Check formatting
+npm run type-check            # TypeScript type checking
+```
+
 ### Running Tests
 
 ```bash
 # Backend tests
-cd backend
-pytest
+cd backend && source venv/bin/activate && pytest
 
 # Frontend tests  
-cd frontend
-npm test
+cd frontend && npm test
 ```
 
 ### Building for Production
 
 ```bash
 # Frontend build
-cd frontend
-npm run build
+cd frontend && npm run build
 
-# Backend dependencies
-cd backend
-pip install -r requirements.txt
+# Backend production setup
+cd backend && pip install -r requirements.txt
 ```
 
-### Code Quality
+### Git Hooks & CI/CD
 
-```bash
-# Frontend linting
-cd frontend
-npm run lint
+- **Pre-commit hooks**: Automatically run linting, formatting, and security checks
+- **GitHub Actions**: Full CI/CD pipeline with quality gates
+- **Conventional commits**: Enforced commit message format
+- **Auto-formatting**: Code is automatically formatted on commit
 
-# Backend formatting (if configured)
-cd backend
-ruff check app/
-```
+### Development Workflow
+
+1. **Make changes** to your code
+2. **Stage files**: `git add .`
+3. **Commit**: `git commit -m "feat: add new feature"` 
+   - Pre-commit hooks automatically run
+   - Code is formatted and linted
+   - Security checks are performed
+4. **Push**: `git push`
+   - GitHub Actions run full test suite
+   - Green checkmark appears when all checks pass
 
 ## 🚨 Troubleshooting
 

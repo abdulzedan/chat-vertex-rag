@@ -29,10 +29,10 @@ function App() {
   };
 
   return (
-    <div className="flex h-screen bg-background">
+    <div className='flex h-screen bg-background'>
       {/* Document List - 25% width */}
-      <div className="w-1/4 min-w-[300px] border-r">
-        <DocumentList 
+      <div className='w-1/4 min-w-[300px] border-r'>
+        <DocumentList
           selectedDocuments={selectedDocuments}
           viewerDocument={viewerDocument}
           onSelectDocument={handleDocumentSelect}
@@ -40,12 +40,12 @@ function App() {
           onViewDocument={setViewerDocument}
         />
       </div>
-      
+
       {/* Document Viewer - Remaining space */}
-      <div className="flex-1 flex flex-col">
+      <div className='flex flex-1 flex-col'>
         <DocumentViewer document={viewerDocument} />
       </div>
-      
+
       {/* Chat Interface - Floating button + slide-out sheet */}
       <ChatInterface selectedDocuments={selectedDocuments} />
     </div>
