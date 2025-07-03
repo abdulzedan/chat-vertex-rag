@@ -2,33 +2,33 @@
 
 A powerful, production-ready Retrieval-Augmented Generation (RAG) application that enables intelligent document search and question-answering. Built with Google Cloud's Vertex AI Search and Gemini models, this demo showcases enterprise-grade document processing and conversational AI capabilities.
 
-## 🌟 Overview
+## Overview
 
 This application provides a complete solution for building document-based AI applications. Upload documents in various formats, search across them intelligently, and have natural conversations about their content - all powered by Google's latest AI technologies.
 
-## 🚀 Features
+## Features
 
-### 📄 Multi-Format Document Support
+### Multi-Format Document Support
 - **PDFs**: Advanced processing with Document AI Layout Parser and Gemini Vision
 - **Images**: OCR text extraction with Gemini Vision capabilities  
 - **CSV/Excel**: Table-aware processing with markdown formatting
 - **Word Documents**: Structure-preserving extraction
 - **Plain Text**: Multi-encoding support
 
-### 🔍 Intelligent Search & Chat
+### Intelligent Search & Chat
 - **Multi-Document Queries**: Select specific documents or search across all
 - **Conversation Context**: Follow-up questions that remember previous context
 - **Streaming Responses**: Real-time response generation with typing indicators
 - **Rich Formatting**: Tables, citations, lists, and code blocks in responses
 - **Document Citations**: Automatic source attribution and references
 
-### 🎯 Advanced Processing
+### Advanced Processing
 - **Hierarchical Processing**: Document AI → Gemini Multimodal → Standard libraries
 - **Table-Aware Chunking**: Preserves table integrity across document chunks
 - **Semantic Chunking**: Intelligent text segmentation with context preservation
 - **Entity Extraction**: Automatic extraction of dates, percentages, currency, etc.
 
-## 🛠 Quick Start
+## Quick Start
 
 ### Prerequisites
 - Python 3.9+
@@ -86,7 +86,7 @@ npm run dev  # Development server on port 3000
 
 Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-## 📖 Usage Guide
+## Usage Guide
 
 ### Document Management
 1. **Upload Documents**: Drag and drop files or click to browse
@@ -107,7 +107,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 - "What percentage increases are mentioned?"
 - "Summarize the key findings from the research"
 
-## 🔧 Configuration Options
+## Configuration Options
 
 ### Document AI Enhancement
 Enable Document AI for better PDF processing:
@@ -127,7 +127,7 @@ GEMINI_MODEL=gemini-2.0-flash-001    # Default (fastest)
 GEMINI_MODEL=gemini-1.5-pro          # Higher quality
 ```
 
-## 📊 Supported File Types
+## Supported File Types
 
 | Format | Extensions | Processing Method |
 |--------|------------|-------------------|
@@ -138,7 +138,7 @@ GEMINI_MODEL=gemini-1.5-pro          # Higher quality
 | Excel | `.xlsx` | Multi-sheet processing |
 | Text | `.txt` | Multi-encoding support |
 
-## 📥 Document Processing & Indexing Pipeline
+## Document Processing & Indexing Pipeline
 
 ### How Documents Are Loaded into Vertex AI Search
 
@@ -193,7 +193,7 @@ Each chunk is enriched with structured metadata:
 | **Word Documents** | Structure-preserving python-docx | Maintains formatting and hierarchy |
 | **Plain Text** | Multi-encoding detection | Semantic boundary detection |
 
-## 🏗 Architecture Overview
+## Architecture Overview
 
 ```
 ┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
@@ -208,7 +208,7 @@ Each chunk is enriched with structured metadata:
                               └─── Streaming Chat ──────┘
 ```
 
-## 🧪 Development
+## Development
 
 ### Quick Setup
 
@@ -297,7 +297,7 @@ cd backend && pip install -r requirements.txt
    - GitHub Actions run full test suite
    - Green checkmark appears when all checks pass
 
-## 🚨 Troubleshooting
+## Troubleshooting
 
 ### Common Issues
 
@@ -330,7 +330,7 @@ INFO: Trying Gemini multimodal as fallback           # Fast fallback
 INFO: Falling back to PyPDF2 standard processing     # Basic fallback
 ```
 
-## 📝 API Documentation
+## API Documentation
 
 ### Document Endpoints
 - `POST /api/documents/upload` - Upload and process documents
@@ -342,7 +342,7 @@ INFO: Falling back to PyPDF2 standard processing     # Basic fallback
 - `GET /api/conversations/{session_id}` - Get conversation history
 - `DELETE /api/conversations/{session_id}` - Clear conversation
 
-## 🤝 Contributing
+## Contributing
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
@@ -350,18 +350,18 @@ INFO: Falling back to PyPDF2 standard processing     # Basic fallback
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
-## 📄 License
+## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🆘 Support
+## Support
 
 For questions and support:
-- 💬 GitHub Issues: [Create an issue](https://github.com/your-username/rag-demo/issues)
-- 📚 Google Cloud Documentation: [Vertex AI Search](https://cloud.google.com/vertex-ai/docs/vector-search/overview)
-- 📖 Documentation: See [Technical Guide](docs/TECHNICAL_GUIDE.md) for detailed technical information
+- GitHub Issues: [Create an issue](https://github.com/your-username/rag-demo/issues)
+- Google Cloud Documentation: [Vertex AI Search](https://cloud.google.com/vertex-ai/docs/vector-search/overview)
+- Documentation: See [Technical Guide](docs/TECHNICAL_GUIDE.md) for detailed technical information
 
-## 🏗️ System Requirements
+## System Requirements
 
 ### Minimum Requirements
 - **CPU**: 2 vCPUs
@@ -377,7 +377,7 @@ For questions and support:
   - Document AI API (optional)
   - Cloud Storage API
 
-## 🔐 Security Considerations
+## Security Considerations
 
 ### Authentication
 - Service account credentials should have minimal required permissions
@@ -389,71 +389,7 @@ For questions and support:
 - Ensure compliance with your data privacy requirements
 - Consider data residency requirements when selecting GCP regions
 
-## 💰 Cost Estimation
-
-### API Usage Costs (Approximate)
-- **Vertex AI Search**: $0.50 per 1,000 queries
-- **Gemini 2.0 Flash**: $0.075 per 1M input tokens, $0.30 per 1M output tokens
-- **Document AI**: $1.50 per 1,000 pages (if enabled)
-
-### Example Monthly Costs
-- Light usage (100 documents, 1,000 queries): ~$50-100
-- Medium usage (1,000 documents, 10,000 queries): ~$200-500
-- Heavy usage (10,000 documents, 100,000 queries): ~$1,000-2,500
-
-## 🚀 Deployment Options
-
-### Local Development
-Follow the Quick Start guide above for local deployment.
-
-### Cloud Deployment
-
-#### Google Cloud Run
-```bash
-# Build and deploy backend
-cd backend
-gcloud run deploy rag-backend \
-  --source . \
-  --region us-central1 \
-  --allow-unauthenticated
-
-# Deploy frontend to Firebase Hosting
-cd frontend
-npm run build
-firebase deploy
-```
-
-#### Kubernetes (GKE)
-```yaml
-# Example deployment.yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: rag-backend
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: rag-backend
-  template:
-    metadata:
-      labels:
-        app: rag-backend
-    spec:
-      containers:
-      - name: backend
-        image: gcr.io/your-project/rag-backend:latest
-        ports:
-        - containerPort: 8000
-        env:
-        - name: GCP_PROJECT_ID
-          valueFrom:
-            secretKeyRef:
-              name: gcp-config
-              key: project-id
-```
-
-## 📊 Performance Tuning
+## Performance Tuning
 
 ### Backend Optimization
 - **Connection Pooling**: Configure uvicorn workers based on CPU cores
@@ -470,7 +406,7 @@ spec:
 - **Quality Priority**: Use `gemini-1.5-pro`
 - **Cost Priority**: Implement caching and result reuse
 
-## 🔄 Version History
+## Version History
 
 ### v1.0.0 (Current)
 - Initial public release
@@ -488,7 +424,7 @@ spec:
 - [ ] Custom embedding models
 - [ ] Integration with Google Drive
 
-## 🤝 Contributing
+## Contributing
 
 We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
 
@@ -506,23 +442,23 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 - **TypeScript**: Use ESLint configuration
 - **Commits**: Follow conventional commits format
 
-## 📄 License
+## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🆘 Support
+## Support
 
 ### Documentation
-- 📖 [Technical Guide](docs/TECHNICAL_GUIDE.md) - Detailed architecture and implementation
-- 🔧 [API Reference](docs/api-reference.md) - Complete API documentation
-- 🚨 [Troubleshooting Guide](docs/troubleshooting.md) - Common issues and solutions
+- [Technical Guide](docs/TECHNICAL_GUIDE.md) - Detailed architecture and implementation
+- [API Reference](docs/api-reference.md) - Complete API documentation
+- [Troubleshooting Guide](docs/troubleshooting.md) - Common issues and solutions
 
 ### Community
-- 💬 GitHub Issues: [Create an issue](https://github.com/your-username/rag-demo/issues)
-- 📚 Google Cloud Documentation: [Vertex AI Search](https://cloud.google.com/vertex-ai/docs/vector-search/overview)
-- 🎯 Stack Overflow: Tag with `vertex-ai-search` and `gemini-api`
+- GitHub Issues: [Create an issue](https://github.com/your-username/rag-demo/issues)
+- Google Cloud Documentation: [Vertex AI Search](https://cloud.google.com/vertex-ai/docs/vector-search/overview)
+- Stack Overflow: Tag with `vertex-ai-search` and `gemini-api`
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - Built with Google Cloud Vertex AI and Gemini
 - UI components from [shadcn/ui](https://ui.shadcn.com/)
