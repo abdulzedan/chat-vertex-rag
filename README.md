@@ -1,227 +1,186 @@
-# RAG Demo with Vertex AI Search and Gemini
+# RAG Engine Demo
 
-A Retrieval-Augmented Generation (RAG) application that enables intelligent document search and question-answering. Upload documents, search across them intelligently, and chat with your documents using Google's Vertex AI Search and Gemini.
+This repository contains a Retrieval-Augmented Generation (RAG) application that pairs a FastAPI backend with a React/Vite frontend. Documents uploaded through the UI are normalized, chunked with rich metadata, indexed in Vertex AI Search, and then used to answer questions with Gemini models. The project demonstrates how to combine Google Cloud's managed retrieval stack with custom ingestion logic, document-quality safeguards, and a conversational interface.
 
-## Features
+## Architecture at a Glance
 
-- **Multi-format support**: PDFs, images, CSV, Word, Excel, plain text
-- **Intelligent search**: Multi-document queries with conversation context  
-- **Streaming chat**: Real-time responses with document citations
-- **Smart processing**: Table-aware chunking, semantic segmentation, entity extraction
-- **Hierarchical processing**: Document AI → Gemini Vision → Standard libraries fallback
+```
+┌──────────────────────────────────────────────────────────┐
+│ React / Vite Frontend                                  │
+│ • Upload & selection UI • Streaming chat • Tailwind UI │
+└───────────────▲───────────────────────┬──────────────────┘
+                │                       │ SSE responses
+                │ REST + uploads        │ (Gemini)
+┌───────────────┴───────────────────────▼──────────────────┐
+│ FastAPI Backend                                          │
+│ • EnhancedDocumentProcessor      • VertexSearchService   │
+│ • Optional Document AI & Gemini  • In-memory + remote    │
+│   fallbacks for ingestion          chunk fallbacks       │
+└───────────────▲───────────────────────┬──────────────────┘
+                │                       │ Discovery Engine
+                │ GCS temp storage      │ Vertex AI Search
+┌───────────────┴──────────┐   ┌────────▼──────────────┐
+│ Google Cloud Storage     │   │ Vertex AI Search      │
+│ • Staging for uploaded   │   │ • Datastore + Serving │
+│   files                   │   │   Config             │
+└──────────────────────────┘   └───────────────────────┘
+```
 
-## Quick Start
+*Document ingestion* uses a hierarchical strategy: Document AI (optional) → Gemini multimodal → format-specific parsers. Chunks carry section hints, page ranges, keyword terms, and entity summaries. *Retrieval* relies on Vertex AI Search with streaming Gemini responses. When the serving index cannot satisfy a query, the backend synthesizes results from cached chunks or pulls them directly from Discovery Engine so users still receive document summaries.
 
-### Prerequisites
-- Python 3.9+, Node.js 16+
-- Google Cloud Project with Vertex AI enabled
+## Prerequisites
 
-### Setup
+- macOS, Linux, or WSL with Bash, `python3` (3.9+), and `node` (16+; project tested with Node 20+).  
+- A Google Cloud project with billing enabled.  
+- gcloud CLI initialised (`gcloud init`) and application-default credentials (`gcloud auth application-default login`).  
+- IAM roles: `roles/aiplatform.user`, `roles/discoveryengine.admin`, `roles/storage.objectAdmin`; add `roles/documentai.editor` if you plan to enable Document AI.
 
-1. **Backend**:
+## Provisioning Google Cloud Resources
+
+1. Enable core APIs:
    ```bash
-   cd backend
-   python -m venv venv
-   source venv/bin/activate
-   pip install -r requirements.txt
+   gcloud services enable aiplatform.googleapis.com \
+       discoveryengine.googleapis.com \
+       documentai.googleapis.com \
+       storage.googleapis.com
    ```
-
-2. **Environment** (create `backend/.env`):
+2. From the repository root run the bootstrap script:
    ```bash
-   # Required
-   GCP_PROJECT_ID=your-project-id
-   GCP_LOCATION=us-central1
-   GEMINI_MODEL=gemini-2.0-flash-001
-   
-   # Vertex AI Search (created by setup-gcp.sh)
-   VERTEX_SEARCH_DATASTORE_ID=rag-demo-datastore
-   VERTEX_SEARCH_APP_ID=rag-demo-app
-   
-   # Optional (set to true for better quality)
-   USE_DOCUMENT_AI=false       # Advanced PDF processing
-   USE_VERTEX_RANKING=false    # Better search ranking
-   USE_VERTEX_GROUNDING=false  # Response validation
-   ```
-
-3. **Google Cloud Setup**:
-   ```bash
-   # Setup GCP resources (run once)
    ./scripts/setup-gcp.sh
-   
-   # Setup authentication
-   gcloud auth application-default login
    ```
-   
-   **Manual Vertex AI Search Setup** (if CLI commands unavailable):
-   - The setup script will guide you to create resources manually via Cloud Console
-   - Go to: [Vertex AI Search Console](https://console.cloud.google.com/vertex-ai/search)
-   - Create a Search App: "RAG Demo Search App" (Generic/Search type)
-   - Create a Data Store: "rag-demo-datastore" (Unstructured documents/Global)
-   - Update `backend/.env` with the actual resource IDs provided by the console
+   The script verifies credentials, creates a temporary staging bucket named `${GCP_PROJECT_ID}-rag-temp`, and prints the Discovery Engine datastore/app IDs to store in your environment file. If the script cannot create resources automatically, follow the manual prompts and capture the IDs from the Cloud Console.
 
-4. **Start servers**:
-   ```bash
-   # Backend
-   uvicorn app.main:app --reload --port 8000
-   
-   # Frontend
-   cd frontend && npm install && npm run dev
-   ```
+3. Document AI (optional): note the processor ID and region if you create a Form Parser; set `DOCAI_PROCESSOR_ID` and `DOCAI_LOCATION` accordingly.
 
-5. **Open**: [http://localhost:3000](http://localhost:3000)
+## Local Environment Setup
 
-## Supported File Types
-
-| Format | Extensions | Processing Method |
-|--------|------------|-------------------|
-| PDF | `.pdf` | Document AI → Gemini Vision → PyPDF2 |
-| Images | `.png`, `.jpg`, `.jpeg` | Gemini Vision → Standard OCR |
-| CSV | `.csv` | Enhanced parser with table formatting |
-| Word | `.docx` | Structure-preserving extraction |
-| Excel | `.xlsx` | Multi-sheet processing |
-| Text | `.txt` | Multi-encoding support |
-
-## How It Works
-
-### Document Processing Pipeline
-```
-Upload → Document Processing → Chunking → Metadata Extraction → Index in Vertex AI Search
-```
-
-1. **Document Upload**: Files are processed using hierarchical fallback (Document AI → Gemini Vision → Standard libraries)
-2. **Smart Chunking**: Semantic chunking with table preservation (300-1500 chars, 150 char overlap)
-3. **Metadata Enhancement**: Extract entities (dates, percentages, currency) and semantic flags
-4. **Vertex AI Indexing**: Automatic embeddings and enterprise search capabilities
-
-### Architecture
-```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   React Frontend│    │   FastAPI Backend│    │ Vertex AI Search│
-│ • File Upload   │────│ • Document AI    │────│ • Auto Embedding│
-│ • Document List │    │ • Gemini Vision  │    │ • Vector Storage│
-│ • Chat Interface│    │ • Smart Chunking │    │ • Semantic Search│
-└─────────────────┘    └──────────────────┘    └─────────────────┘
-```
-
-## Usage
-
-1. **Upload documents**: Drag and drop files or click to browse
-2. **Select documents**: Use checkboxes to choose which documents to query  
-3. **Open chat**: Click the chat button after selecting documents
-4. **Ask questions**: Type questions about your documents
-5. **Get answers**: Receive streaming responses with citations
-
-### Example Queries
-- "What are the main points in this document?"
-- "Compare the pricing between these two documents"  
-- "What percentage increases are mentioned?"
-- "Summarize the key findings from the research"
-
-## Development
-
-### Quick Setup
+### One-command setup (recommended)
 ```bash
-# Automated setup (recommended)
 ./scripts/setup-dev.sh
-
-# Manual setup
-cd backend && python -m venv venv && source venv/bin/activate && pip install -e ".[dev]"
-cd frontend && npm install
-pre-commit install
 ```
+The script creates `backend/venv`, installs editable backend requirements (including lint/test extras), installs frontend dependencies, and wires up pre-commit hooks.
 
-### Code Quality
+### Manual setup
 ```bash
-# Run all quality checks
-pre-commit run --all-files
+# Backend
+cd backend
+python3 -m venv venv
+source venv/bin/activate
+pip install -e ".[dev]"
 
-# Backend linting & formatting  
-cd backend && source venv/bin/activate
-ruff check app/ --fix && ruff format app/ && isort app/
-
-# Frontend linting
-cd frontend && npm run lint && npm run format
+# Frontend
+cd ../frontend
+npm install
 ```
 
-### Key Files
-- `backend/app/main.py` - FastAPI server entry point
-- `backend/app/services/vertex_search.py` - Vertex AI Search integration
-- `backend/app/services/enhanced_document_processor.py` - Document processing pipeline
-- `frontend/src/components/ChatInterface.tsx` - Main chat component
-- `frontend/src/components/DocumentManager.tsx` - Document upload/management
+### Environment configuration
+Create `backend/.env` before running the backend. Key variables:
 
-## API Endpoints
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `GCP_PROJECT_ID` | ✓ | Google Cloud project that hosts Vertex AI Search and storage. |
+| `GCP_LOCATION` | ✓ | Location for Discovery Engine (usually `global`). |
+| `GEMINI_MODEL` | ✓ | Gemini model for generation, e.g. `gemini-2.0-flash-001`. |
+| `VERTEX_SEARCH_DATASTORE_ID` | ✓ | Discovery Engine datastore ID produced by `setup-gcp.sh`. |
+| `VERTEX_SEARCH_APP_ID` | ✓ | Enterprise Search app/engine ID. |
+| `USE_DOCUMENT_AI` | optional | `true` to run Document AI form parser before other extractors. |
+| `USE_GEMINI_FALLBACK` | optional | Defaults to `true`; set to `false` to skip Gemini multimodal extraction. |
+| `USE_VERTEX_RANKING` | optional | Enable Vertex AI Builder re-ranking (`true`/`false`). |
+| `GCS_STAGING_BUCKET` | optional | Overrides the default `${GCP_PROJECT_ID}-rag-temp` staging bucket used during ingestion. |
+| `USE_VERTEX_GROUNDING` | optional | Enable grounding calls for generated answers. |
+| `DOCAI_PROCESSOR_ID` / `DOCAI_LOCATION` | optional | Required only when Document AI is enabled. |
 
-### Document Management
-- `POST /api/documents/upload` - Upload and process documents
-- `GET /api/documents/` - List all documents  
-- `DELETE /api/documents/{id}` - Delete specific document
+## Running the Project Locally
 
-### Chat Interface
-- `POST /api/chat/query` - Streaming query with Server-Sent Events
-- `GET /api/conversations/{session_id}` - Get conversation history
-- `DELETE /api/conversations/{session_id}` - Clear conversation
+Backend (FastAPI with Uvicorn):
+```bash
+cd backend
+source venv/bin/activate
+uvicorn app.main:app --reload --port 8000
+```
 
-## Google Cloud Resources
+Frontend (Vite dev server on port 3000):
+```bash
+cd frontend
+npm run dev
+```
 
-### Required GCP Setup
-The `./scripts/setup-gcp.sh` script handles:
+Navigate to `http://localhost:3000`, upload documents, select them, and initiate a chat session. The UI streams Gemini responses via Server-Sent Events.
 
-**Automatic Setup:**
-- Enables required APIs: Vertex AI, Discovery Engine, Document AI, Storage
-- Verifies authentication and permissions
-- Sets up Application Default Credentials
+## Document Processing Flow
 
-**Manual Setup Required:**
-- **Vertex AI Search Data Store**: Stores and indexes your documents
-- **Vertex AI Search App**: Provides the search interface and ranking
-- **Resource IDs**: Must be added to your `backend/.env` file
+1. **Upload** – Files are staged to `backend/uploads/` and (for larger PDFs) to `gs://{project}-rag-temp` during ingestion. Duplicate filenames are skipped gracefully.
+2. **Extraction** –
+   - Optional Document AI layout parsing.
+   - Gemini multimodal extraction for PDFs/images within size limits.
+   - File-type specific fallbacks (PyPDF2, `python-docx`, CSV, XLSX parsers).
+3. **Normalization** – Text is cleaned, headings detected, tables preserved, and entities (dates, URLs, emails, currency, abbreviations) captured.
+4. **Chunking** – Sentences are grouped into 300–1500 character windows with overlap and table-aware handling. Metadata for each chunk includes section hints, page ranges, keyword terms, token estimates, and table flags.
+5. **Indexing** – Each chunk is indexed individually in Vertex AI Search. Metadata is also stored in memory for quick recall.
+6. **Fallbacks** – If Vertex AI Search cannot satisfy a filtered query, the backend synthesizes search results from cached chunks or fetches chunk documents directly by ID so generic prompts still return context.
 
-### Step-by-Step Manual Setup
+## Query & Chat Pipeline
 
-1. **Run the setup script first**:
-   ```bash
-   ./scripts/setup-gcp.sh
-   ```
+- Queries with selected document IDs run through Vertex AI Search using a pre-search filter on `parent_document_id`.  
+- Results are grouped by document, truncated to the optimal context size, and streamed into Gemini (`gemini-2.0-flash-001` by default).  
+- Conversation history is stored per session to support follow-up questions; query reformulation injects prior context when the user references “that document” or similar pronouns.
 
-2. **Follow the manual setup instructions** (displayed by script):
-   - Visit: https://console.cloud.google.com/vertex-ai/search
-   - Create Search App → Name: "RAG Demo Search App" → Type: Generic/Search
-   - Create Data Store → Name: "rag-demo-datastore" → Type: Unstructured/Global
+## Key API Endpoints
 
-3. **Update your `.env` file** with the actual IDs:
-   ```bash
-   VERTEX_SEARCH_DATASTORE_ID=your-actual-datastore-id
-   VERTEX_SEARCH_APP_ID=your-actual-app-id
-   ```
+| Method & Path | Purpose |
+|---------------|---------|
+| `POST /api/documents/upload` | Accepts multipart files, processes, and indexes them. |
+| `GET /api/documents/` | Lists all files currently indexed (one row per source document). |
+| `DELETE /api/documents/{id}` | Removes all chunks for a document from Vertex AI Search. |
+| `POST /api/chat/query` | Streams Gemini responses (SSE) using selected document IDs. |
+| `DELETE /api/conversations/{session_id}` | Clears cached conversation state. |
 
-### Required Permissions
-Your GCP user account needs:
-- `roles/owner` OR `roles/editor` OR these specific roles:
-  - `roles/aiplatform.user` (Vertex AI)
-  - `roles/discoveryengine.admin` (Vertex AI Search)
-  - `roles/documentai.editor` (Document AI - optional)
-  - `roles/storage.objectAdmin` (Cloud Storage)
+All endpoints respond with JSON; streaming responses are delivered as `text/event-stream`.
+
+## Frontend Notes
+
+The React application is written in TypeScript, styled with Tailwind, and bundled by Vite. Component entry points:
+- `frontend/src/routes` – page-level routing.
+- `frontend/src/components/DocumentManager.tsx` – upload flow and selection state.
+- `frontend/src/components/ChatInterface.tsx` – SSE client and transcript rendering.
+
+State is local to components; no external state libraries are required.
+
+## Testing & Quality Gates
+
+- **Backend** – Pytest (`pytest`), async tests via `pytest-asyncio`, static checks with Ruff, formatting with Black, import sorting via isort, and type checking with mypy.
+- **Frontend** – ESLint (`npm run lint:check`), Prettier (`npm run format:check`), and TypeScript (`npm run type-check`).
+- **Pre-commit** – Configured hooks run Ruff, Black, isort, mypy, ESLint, and formatting before every commit.
 
 ## Troubleshooting
 
-**"No documents found"**
-- Verify Google Cloud credentials and Vertex AI Search data store creation
-- Check that resource IDs in `.env` match your actual GCP resources
+| Symptom | Action |
+|---------|--------|
+| "No documents found" when querying | Ensure `VERTEX_SEARCH_DATASTORE_ID` and `VERTEX_SEARCH_APP_ID` match the deployed Discovery Engine resources. Confirm the backend has network access to Google APIs. |
+| Upload succeeds but chat returns an empty answer | Check backend logs for Vertex AI Search filtering messages. The fallback fetch will log cache misses and remote chunk retrieval; if both fail, verify IAM roles. |
+| Slow PDF processing | Flip `USE_DOCUMENT_AI=true` for structured files or confirm file size < 19 MB for Gemini multimodal extraction. |
+| Authentication errors | Re-run `gcloud auth application-default login` and confirm billing is enabled. |
+| Frontend cannot connect to backend | Ensure the backend is running on port 8000 and CORS is enabled (FastAPI config allows the local dev origin by default). |
 
-**Authentication errors**  
-- Run `gcloud auth application-default login` to set up authentication
-- Check that Vertex AI APIs are enabled: `gcloud services list --enabled --filter="vertex"`
+## Repository Layout
 
-**Slow processing**
-- Enable Document AI for better PDF processing (`USE_DOCUMENT_AI=true`)
-- Check file sizes (20MB limit for Gemini processing)
-
-**Setup script issues**
-- Ensure you have Owner/Editor role in your GCP project
-- Verify gcloud CLI is installed and authenticated
-- Check that your project has billing enabled
+```
+.
+├── backend/
+│   ├── app/
+│   │   ├── api/                 # FastAPI routers for documents & chat
+│   │   ├── services/            # Ingestion, Vertex AI Search, Gemini helpers
+│   │   └── utils/
+│   ├── requirements.txt         # Runtime dependencies
+│   └── pyproject.toml           # Packaging + tooling configuration
+├── frontend/
+│   ├── src/                     # React components and routes
+│   ├── public/
+│   └── vite.config.ts
+├── scripts/                     # setup-dev.sh, setup-gcp.sh helpers
+└── docs/                        # Reference material (architecture, etc.)
+```
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
+This project is released under the MIT License. See [LICENSE](LICENSE) for details.

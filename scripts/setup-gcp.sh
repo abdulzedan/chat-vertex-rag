@@ -1,147 +1,174 @@
 #!/bin/bash
 
-# Setup Google Cloud Resources for RAG Demo
-# This script ensures required APIs are enabled and provides setup guidance
-# Uses Application Default Credentials (ADC) instead of service account keys
+# Setup Google Cloud resources required by the RAG Engine demo.
+# Creates/validates Discovery Engine data store + search app and a staging bucket.
 
-set -e  # Exit on any error
+set -euo pipefail
 
-# Get project ID from gcloud config or environment
-PROJECT_ID=${GCP_PROJECT_ID:-$(gcloud config get-value project 2>/dev/null)}
-LOCATION="us-central1"
-DATASTORE_ID="rag-demo-datastore"
-APP_ID="rag-demo-app"
-
-if [ -z "$PROJECT_ID" ]; then
-    echo "❌ Error: No GCP project set. Run 'gcloud config set project YOUR_PROJECT_ID' first"
+if ! command -v gcloud >/dev/null 2>&1; then
+    echo "❌ gcloud CLI is not installed. Install the Google Cloud SDK and re-run this script." >&2
     exit 1
 fi
 
-echo "🔧 Setting up Google Cloud resources for RAG Demo..."
-echo "Project: ${PROJECT_ID}"
-echo "Location: ${LOCATION}"
+PROJECT_ID=${GCP_PROJECT_ID:-$(gcloud config get-value project 2>/dev/null || true)}
+ENGINE_LOCATION="global"
+DATASTORE_ID="rag-demo-datastore"
+APP_ID="rag-demo-app"
+STAGING_BUCKET_SUFFIX="rag-temp"
 
-# Set the project
-gcloud config set project ${PROJECT_ID}
+if [[ -z "${PROJECT_ID}" ]]; then
+    echo "❌ No Google Cloud project configured. Run 'gcloud config set project <project-id>' or export GCP_PROJECT_ID." >&2
+    exit 1
+fi
 
-# Check current authentication
-echo "🔐 Checking authentication..."
+STAGING_BUCKET="${PROJECT_ID}-${STAGING_BUCKET_SUFFIX}"
+
+echo "🔧 Configuring Google Cloud resources for project: ${PROJECT_ID}"
+
+gcloud config set project "${PROJECT_ID}" >/dev/null
+
+echo "🔐 Verifying authentication..."
 CURRENT_USER=$(gcloud auth list --filter=status:ACTIVE --format="value(account)")
-echo "Authenticated as: ${CURRENT_USER}"
+if [[ -z "${CURRENT_USER}" ]]; then
+    echo "❌ No active gcloud account. Run 'gcloud auth login' and try again." >&2
+    exit 1
+fi
 
-# Ensure required APIs are enabled
-echo "📡 Ensuring required APIs are enabled..."
+echo "   Active gcloud account: ${CURRENT_USER}"
 
+# Ensure Application Default Credentials exist
+if ! gcloud auth application-default print-access-token >/dev/null 2>&1; then
+    echo "❌ Application Default Credentials not found. Run 'gcloud auth application-default login'." >&2
+    exit 1
+fi
+
+echo "📡 Enabling required APIs (idempotent)..."
 REQUIRED_APIS=(
     "aiplatform.googleapis.com"
     "discoveryengine.googleapis.com"
     "documentai.googleapis.com"
     "storage.googleapis.com"
 )
-
 for api in "${REQUIRED_APIS[@]}"; do
-    if gcloud services list --enabled --filter="name:${api}" --format="value(name)" | grep -q "${api}"; then
-        echo "✅ ${api} is already enabled"
+    if gcloud services list --enabled --filter="name=${api}" --format="value(name)" | grep -q "${api}"; then
+        echo "   ✅ ${api} already enabled"
     else
-        echo "🔄 Enabling ${api}..."
-        gcloud services enable ${api}
+        echo "   🔄 Enabling ${api}..."
+        gcloud services enable "${api}"
     fi
 done
 
-# Check user's permissions
-echo "🔍 Checking current user permissions..."
-USER_ROLES=$(gcloud projects get-iam-policy ${PROJECT_ID} --flatten="bindings[].members" --filter="bindings.members~${CURRENT_USER}" --format="value(bindings.role)")
-
-echo "Current roles for ${CURRENT_USER}:"
-echo "${USER_ROLES}"
-
-# Verify the user has necessary permissions
-if echo "${USER_ROLES}" | grep -q "roles/owner\|roles/editor\|roles/aiplatform\|roles/discoveryengine"; then
-    echo "✅ User has sufficient permissions for Vertex AI and Discovery Engine"
+echo "🔍 Checking IAM roles for ${CURRENT_USER}..."
+USER_ROLES=$(gcloud projects get-iam-policy "${PROJECT_ID}" \
+    --flatten="bindings[].members" \
+    --filter="bindings.members~${CURRENT_USER}" \
+    --format="value(bindings.role)")
+if [[ -n "${USER_ROLES}" ]]; then
+    echo "   Roles:\n${USER_ROLES}"
 else
-    echo "⚠️  Warning: User may need additional permissions for Vertex AI services"
-    echo "   Required roles: roles/aiplatform.user, roles/discoveryengine.admin"
+    echo "   ⚠️  No project-level roles detected for ${CURRENT_USER}." >&2
 fi
 
-# Vertex AI Search resources setup
-echo "🏗️  Setting up Vertex AI Search resources..."
-
-# Check if discovery-engine commands are available
-if ! gcloud alpha discovery-engine --help >/dev/null 2>&1; then
-    echo "⚠️  Vertex AI Search CLI commands not available in current gcloud version"
-    echo "📝 Manual setup required for Vertex AI Search resources:"
-    echo ""
-    echo "   1. Go to: https://console.cloud.google.com/vertex-ai/search"
-    echo "   2. Create a new Search App:"
-    echo "      - App Name: RAG Demo Search App"
-    echo "      - Industry: Generic"
-    echo "      - Solution Type: Search"
-    echo "   3. Create a Data Store:"
-    echo "      - Data Store Name: rag-demo-datastore"
-    echo "      - Type: Unstructured documents"
-    echo "      - Location: Global"
-    echo "   4. Update your backend/.env file with the actual IDs:"
-    echo "      - VERTEX_SEARCH_DATASTORE_ID=your-actual-datastore-id"
-    echo "      - VERTEX_SEARCH_APP_ID=your-actual-app-id"
-    echo ""
-    echo "💡 Note: The console will provide the actual IDs after creation"
+declare -a DISCOVERY_CMD
+if gcloud discovery-engine data-stores list \
+        --project="${PROJECT_ID}" \
+        --location="${ENGINE_LOCATION}" \
+        --collection="default_collection" \
+        --format="value(name)" >/dev/null 2>&1; then
+    DISCOVERY_CMD=(gcloud discovery-engine)
+elif gcloud alpha discovery-engine data-stores list \
+        --project="${PROJECT_ID}" \
+        --location="${ENGINE_LOCATION}" \
+        --collection="default_collection" \
+        --format="value(name)" >/dev/null 2>&1; then
+    DISCOVERY_CMD=(gcloud alpha discovery-engine)
 else
-    # Try to create resources using CLI
-    echo "📦 Attempting to create Vertex AI Search resources via CLI..."
+    DISCOVERY_CMD=()
+fi
 
-    # Check if data store already exists
-    if gcloud alpha discovery-engine data-stores describe ${DATASTORE_ID} --location=global >/dev/null 2>&1; then
-        echo "✅ Data store '${DATASTORE_ID}' already exists"
-    else
-        echo "📦 Creating Vertex AI Search data store: ${DATASTORE_ID}"
-        gcloud alpha discovery-engine data-stores create ${DATASTORE_ID} \
-            --location=global \
-            --industry-vertical=GENERIC \
-            --solution-types=SOLUTION_TYPE_SEARCH \
-            --display-name="RAG Demo Data Store"
-        echo "✅ Data store created successfully"
-    fi
+if [[ ${#DISCOVERY_CMD[@]} -eq 0 ]]; then
+    echo "⚠️  Discovery Engine CLI not available in this gcloud install." >&2
+    echo "   Please create the resources manually via the Cloud Console:" >&2
+    echo "   • Data Store: name '${DATASTORE_ID}', type 'Unstructured documents', location 'Global'" >&2
+    echo "   • Search App / Engine: name '${APP_ID}', industry 'Generic', solution 'Search'" >&2
+else
+    echo "🏗️  Using '${DISCOVERY_CMD[*]}' to verify Discovery Engine resources..."
 
-    # Check if search app already exists
-    if gcloud alpha discovery-engine engines describe ${APP_ID} --location=global >/dev/null 2>&1; then
-        echo "✅ Search app '${APP_ID}' already exists"
+    DATASTORE_RESOURCE="projects/${PROJECT_ID}/locations/${ENGINE_LOCATION}/collections/default_collection/dataStores/${DATASTORE_ID}"
+    APP_RESOURCE="projects/${PROJECT_ID}/locations/${ENGINE_LOCATION}/collections/default_collection/engines/${APP_ID}"
+
+    if "${DISCOVERY_CMD[@]}" data-stores describe "${DATASTORE_ID}" \
+            --project="${PROJECT_ID}" \
+            --location="${ENGINE_LOCATION}" \
+            --collection="default_collection" >/dev/null 2>&1; then
+        echo "   ✅ Data store '${DATASTORE_ID}' exists"
     else
-        echo "📦 Creating Vertex AI Search app: ${APP_ID}"
-        gcloud alpha discovery-engine engines create ${APP_ID} \
-            --location=global \
-            --data-store-ids=${DATASTORE_ID} \
-            --display-name="RAG Demo Search App" \
+        echo "   📦 Creating data store '${DATASTORE_ID}'"
+        "${DISCOVERY_CMD[@]}" data-stores create "${DATASTORE_ID}" \
+            --project="${PROJECT_ID}" \
+            --location="${ENGINE_LOCATION}" \
+            --collection="default_collection" \
+            --display-name="RAG Demo Data Store" \
             --industry-vertical=GENERIC \
             --solution-types=SOLUTION_TYPE_SEARCH
-        echo "✅ Search app created successfully"
+        echo "   ✅ Data store created"
     fi
+
+    if "${DISCOVERY_CMD[@]}" engines describe "${APP_ID}" \
+            --project="${PROJECT_ID}" \
+            --location="${ENGINE_LOCATION}" \
+            --collection="default_collection" >/dev/null 2>&1; then
+        echo "   ✅ Search engine '${APP_ID}' exists"
+    else
+        echo "   📦 Creating search engine '${APP_ID}' linked to '${DATASTORE_ID}'"
+        "${DISCOVERY_CMD[@]}" engines create "${APP_ID}" \
+            --project="${PROJECT_ID}" \
+            --location="${ENGINE_LOCATION}" \
+            --collection="default_collection" \
+            --display-name="RAG Demo Search App" \
+            --industry-vertical=GENERIC \
+            --solution-types=SOLUTION_TYPE_SEARCH \
+            --data-store-ids="${DATASTORE_ID}"
+        echo "   ✅ Search engine created"
+    fi
+
+    echo "   Discovery Engine resources ready:"
+    echo "     • ${DATASTORE_RESOURCE}"
+    echo "     • ${APP_RESOURCE}"
+fi
+
+echo "🪣 Ensuring staging bucket gs://${STAGING_BUCKET} exists..."
+if gsutil ls -b "gs://${STAGING_BUCKET}" >/dev/null 2>&1; then
+    echo "   ✅ Bucket already present"
+else
+    echo "   📦 Creating bucket..."
+    gsutil mb -p "${PROJECT_ID}" -l "us-central1" "gs://${STAGING_BUCKET}"
+    echo "   ✅ Bucket created"
 fi
 
 echo ""
-echo "✅ Basic Google Cloud setup verification complete!"
+echo "✅ Google Cloud validation complete"
 echo ""
-echo "📋 Summary:"
-echo "  Project ID: ${PROJECT_ID}"
-echo "  Authentication: Using Application Default Credentials"
-echo "  Current User: ${CURRENT_USER}"
-echo "  Location: ${LOCATION}"
+echo "📋 Summary"
+echo "  Project ID              : ${PROJECT_ID}"
+echo "  Active Account          : ${CURRENT_USER}"
+echo "  Discovery Engine Locale : ${ENGINE_LOCATION}"
+echo "  Data Store ID           : ${DATASTORE_ID}"
+echo "  Search Engine ID        : ${APP_ID}"
+echo "  Staging Bucket          : gs://${STAGING_BUCKET}"
+
 echo ""
-echo "🔧 Vertex AI Search Setup:"
-echo "  Data Store ID: ${DATASTORE_ID}"
-echo "  App ID: ${APP_ID}"
+echo "📝 Add the following to backend/.env (replace if you customise IDs):"
+echo "  GCP_PROJECT_ID=${PROJECT_ID}"
+echo "  GCP_LOCATION=${ENGINE_LOCATION}"
+echo "  VERTEX_SEARCH_DATASTORE_ID=${DATASTORE_ID}"
+echo "  VERTEX_SEARCH_APP_ID=${APP_ID}"
+echo "  GCS_STAGING_BUCKET=${STAGING_BUCKET}"
+
 echo ""
-echo "📝 Next Steps:"
-echo "  1. ✅ APIs are enabled and user is authenticated"
-echo "  2. 🌐 Vertex AI Search Engine appears to be configured in your .env"
-echo "  3. 🚀 Run './setup-dev.sh' to setup the development environment"
-echo "  4. 🎯 Start the application with the Quick Start guide"
-echo ""
-echo "💡 Notes:"
-echo "  - Using Application Default Credentials (no service account keys needed)"
-echo "  - Your current user account has the necessary permissions"
-echo "  - Vertex AI Search resources (data store & app) should be managed via Cloud Console"
-echo "    or using the Discovery Engine APIs if needed"
-echo ""
-echo "🔗 Useful Links:"
-echo "  - Vertex AI Search Console: https://console.cloud.google.com/vertex-ai/search"
-echo "  - Discovery Engine API: https://cloud.google.com/discovery-engine/docs"
+echo "Next steps"
+echo "  1. Run ./scripts/setup-dev.sh to install backend/frontend dependencies."
+echo "  2. Start the backend (uvicorn) and frontend (npm run dev)."
+echo "  3. Upload documents at http://localhost:3000 to verify ingestion."
+
+echo "🚀 Google Cloud environment is ready."
