@@ -505,30 +505,27 @@ async def _reformulate_query_with_context(
         query_lower = query.lower()
 
         # If query has contextual references, expand with previous topics
-        if any(
-            word in query_lower
-            for word in ["that", "those", "other", "compare", "them", "this", "these"]
+        if (
+            any(
+                word in query_lower
+                for word in [
+                    "that",
+                    "those",
+                    "other",
+                    "compare",
+                    "them",
+                    "this",
+                    "these",
+                ]
+            )
+            and previous_questions
         ):
-            if previous_questions:
-                # Extract key terms from previous questions
-                previous_topics = []
-                for prev_q in previous_questions:
-                    if "mcap" in prev_q.lower():
-                        previous_topics.append("MCAP")
-                    if any(
-                        word in prev_q.lower() for word in ["rate", "rates", "pricing"]
-                    ):
-                        previous_topics.append("rates")
-
-                if previous_topics:
-                    # Simple reformulation with extracted topics
-                    if "compare" in query_lower and "MCAP" in previous_topics:
-                        return "Compare MCAP rates with other lenders rates"
-                    elif (
-                        any(word in query_lower for word in ["that", "those"])
-                        and previous_topics
-                    ):
-                        return f"Information about {' '.join(previous_topics)}"
+            context_source = previous_questions[-1]
+            context_words = context_source.split()
+            context_snippet = " ".join(context_words[:8])
+            reformulated = f"{query.strip()} (context: {context_snippet})"
+            logger.debug(f"Reformulated query with context snippet: {reformulated}")
+            return reformulated
 
         # If no context needed, return original query
         return query

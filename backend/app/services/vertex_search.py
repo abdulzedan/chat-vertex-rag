@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Optional
 
 from google.api_core.exceptions import GoogleAPIError, ServiceUnavailable
 from google.cloud import discoveryengine_v1 as discoveryengine
+from google.protobuf.json_format import MessageToDict
+from google.protobuf.struct_pb2 import Struct
 from vertexai.generative_models import GenerativeModel
 
 # Optional Vertex AI Builder APIs
@@ -237,7 +239,7 @@ Please provide a complete answer based on the information in these documents. In
         document_id: str,
         filename: str,
         text_content: str,
-        chunks: List[str],
+        chunks: List[Dict[str, Any]],
         metadata: Dict[str, Any],
     ) -> str:
         """Index a document with chunk-based semantic indexing"""
@@ -245,12 +247,13 @@ Please provide a complete answer based on the information in these documents. In
             logger.info(f"Indexing document with semantic chunks: {filename}")
 
             # Store in memory immediately for fallback
+            doc_metadata = metadata or {}
             document_data = {
                 "id": document_id,
                 "filename": filename,
                 "content": text_content,
                 "chunks": chunks,
-                "metadata": metadata,
+                "metadata": doc_metadata,
                 "upload_time": datetime.now().isoformat(),
             }
             self.documents[document_id] = document_data
@@ -267,7 +270,7 @@ Please provide a complete answer based on the information in these documents. In
 
                 # Index individual chunks as separate documents (no main document)
                 chunk_ids = await self._index_document_chunks(
-                    document_id, filename, chunks, metadata, branch_path
+                    document_id, filename, chunks, doc_metadata, branch_path
                 )
 
                 logger.info(
@@ -566,10 +569,10 @@ Please provide a complete answer based on the information in these documents. In
                         rerank_limit, 50
                     )  # Cap at 50 to avoid overwhelming responses
 
-                    # For large document sets, skip re-ranking to preserve all lender results
+                    # For large document sets, skip re-ranking to preserve coverage of all sources
                     if document_ids and len(document_ids) > 20:
                         logger.info(
-                            f"Skipping re-ranking for large document set ({len(document_ids)} docs) to preserve all {len(results)} results from multiple lenders"
+                            f"Skipping re-ranking for large document set ({len(document_ids)} docs) to preserve all {len(results)} results across sources"
                         )
                     else:
                         logger.info(
@@ -621,7 +624,7 @@ Please provide a complete answer based on the information in these documents. In
                     logger.info(
                         f"After broader search: {len(document_names)} documents represented"
                     )
-            else:
+            elif document_ids:
                 logger.info(
                     f"Good document coverage: {len(document_names)}/{len(document_ids)} documents have relevant content"
                 )
@@ -630,6 +633,18 @@ Please provide a complete answer based on the information in these documents. In
                 logger.warning(
                     f"No search results found in Vertex AI Search for query: {query}"
                 )
+                if document_ids:
+                    logger.info(
+                        "Attempting in-memory fallback using cached document chunks"
+                    )
+                    fallback_results = self._build_in_memory_results(
+                        document_ids=document_ids, max_results=max_results
+                    )
+                    if fallback_results:
+                        logger.info(
+                            f"Returning {len(fallback_results)} fallback results from cached chunks"
+                        )
+                        return fallback_results
                 return []
 
             return results
@@ -1009,6 +1024,221 @@ Please provide a complete answer based on the information in these documents. In
             logger.error(f"Error generating response: {e}")
             return f"I encountered an error while processing your question: {str(e)}"
 
+    def _build_in_memory_results(
+        self, document_ids: List[str], max_results: int
+    ) -> List[Dict[str, Any]]:
+        """Create synthetic search results from cached chunks when Vertex AI Search yields nothing."""
+
+        doc_order = {doc_id: index for index, doc_id in enumerate(document_ids)}
+        doc_chunk_counter: Dict[str, int] = {}
+        fallback_results: List[Dict[str, Any]] = []
+
+        for doc_id in document_ids:
+            document = self.documents.get(doc_id)
+            if not document:
+                logger.info(
+                    f"Fallback cache miss for document {doc_id}; fetching chunks from Vertex AI Search"
+                )
+                remote_chunks = self._fetch_chunks_from_vertex(
+                    document_id=doc_id, max_results=max_results
+                )
+                fallback_results.extend(remote_chunks)
+                continue
+
+            filename = document.get("filename", "Unknown document")
+            chunk_records = document.get("chunks", [])
+
+            for chunk in chunk_records:
+                if isinstance(chunk, dict):
+                    chunk_text = chunk.get("text", "").strip()
+                    chunk_metadata = chunk.get("metadata", {})
+                else:
+                    # Backward compatibility with legacy string-based chunks
+                    chunk_text = str(chunk).strip()
+                    chunk_metadata = {}
+
+                if not chunk_text:
+                    continue
+
+                if not chunk_metadata:
+                    logger.debug(
+                        f"Fallback chunk from {doc_id} has no metadata; treating as legacy entry"
+                    )
+
+                raw_index = chunk_metadata.get("chunk_index")
+                if isinstance(raw_index, int):
+                    chunk_index = raw_index
+                else:
+                    chunk_index = doc_chunk_counter.get(doc_id, 0)
+
+                doc_chunk_counter[doc_id] = chunk_index + 1
+
+                fallback_results.append(
+                    {
+                        "document_id": f"{doc_id}_memory_{chunk_index if chunk_index is not None else len(fallback_results)}",
+                        "parent_document_id": doc_id,
+                        "is_chunk": True,
+                        "content_type": chunk_metadata.get("content_type", "text"),
+                        "title": chunk_metadata.get(
+                            "headline",
+                            f"{filename} - Chunk {chunk_index + 1 if isinstance(chunk_index, int) else 1}",
+                        ),
+                        "filename": filename,
+                        "content": chunk_text,
+                        "snippets": [chunk_text[:500]],
+                        "relevance_score": 0.0,
+                        "section_hint": chunk_metadata.get("section_hint"),
+                        "page_start": chunk_metadata.get("page_start"),
+                        "page_end": chunk_metadata.get("page_end"),
+                        "keyword_terms": chunk_metadata.get("keyword_terms", []),
+                        "entities": chunk_metadata.get("entities", {}),
+                        "contains_table": chunk_metadata.get("contains_table", False),
+                        "chunk_index": chunk_index,
+                    }
+                )
+
+        fallback_results.sort(
+            key=lambda item: (
+                doc_order.get(item.get("parent_document_id"), len(doc_order)),
+                item.get("chunk_index", 0)
+                if isinstance(item.get("chunk_index"), int)
+                else 0,
+            )
+        )
+
+        truncated_results = fallback_results[:max_results]
+
+        if truncated_results:
+            logger.info(
+                f"Constructed {len(truncated_results)} fallback results from in-memory chunks"
+            )
+
+        for result in truncated_results:
+            result.pop("chunk_index", None)
+
+        return truncated_results
+
+    def _fetch_chunks_from_vertex(
+        self, document_id: str, max_results: int
+    ) -> List[Dict[str, Any]]:
+        """Fetch chunk documents directly from Vertex AI Search when they are not cached in memory."""
+
+        fetched_results: List[Dict[str, Any]] = []
+        chunk_index = 0
+
+        while len(fetched_results) < max_results:
+            chunk_id = f"{document_id}_chunk_{chunk_index}"
+            chunk_path = self.client.document_path(
+                project=self.project_id,
+                location=self.location,
+                data_store=self.data_store_id,
+                branch="default_branch",
+                document=chunk_id,
+            )
+
+            try:
+                document = self.client.get_document(name=chunk_path)
+            except Exception as e:
+                logger.debug(
+                    f"Stopping remote chunk fetch for {document_id} at index {chunk_index}: {e}"
+                )
+                break
+
+            chunk_text = ""
+            if document.content and document.content.raw_bytes:
+                try:
+                    chunk_text = document.content.raw_bytes.decode(
+                        "utf-8", errors="ignore"
+                    )
+                except Exception:
+                    chunk_text = document.content.raw_bytes.decode(
+                        "latin-1", errors="ignore"
+                    )
+
+            struct_data: Dict[str, Any] = {}
+            if document.struct_data:
+                struct_data = self._convert_struct_to_dict(document.struct_data)
+
+            filename = struct_data.get("filename", "Unknown document")
+            content_type = struct_data.get("content_type", "text")
+
+            fetched_results.append(
+                {
+                    "document_id": chunk_id,
+                    "parent_document_id": struct_data.get(
+                        "parent_document_id", document_id
+                    ),
+                    "is_chunk": True,
+                    "content_type": content_type,
+                    "title": struct_data.get(
+                        "title", f"{filename} - Chunk {chunk_index + 1}"
+                    ),
+                    "filename": filename,
+                    "content": chunk_text,
+                    "snippets": [chunk_text[:500]],
+                    "relevance_score": 0.0,
+                    "section_hint": struct_data.get("section_hint"),
+                    "page_start": struct_data.get("page_start"),
+                    "page_end": struct_data.get("page_end"),
+                    "keyword_terms": struct_data.get("keyword_terms", []),
+                    "entities": struct_data.get("entities", {}),
+                    "contains_table": struct_data.get("contains_table", False),
+                    "chunk_index": chunk_index,
+                }
+            )
+
+            chunk_index += 1
+
+        if fetched_results:
+            logger.info(
+                f"Fetched {len(fetched_results)} chunks directly from Vertex AI Search for document {document_id}"
+            )
+
+        return fetched_results
+
+    def _convert_struct_to_dict(self, struct_obj: Struct) -> Dict[str, Any]:
+        """Convert a protobuf Struct into native Python types recursively."""
+
+        def _convert(value: Any) -> Any:
+            if isinstance(value, Struct):
+                return {k: _convert(v) for k, v in value.fields.items()}
+
+            if isinstance(value, dict):
+                if "stringValue" in value:
+                    result = value["stringValue"]
+                elif "numberValue" in value:
+                    result = value["numberValue"]
+                elif "boolValue" in value:
+                    result = value["boolValue"]
+                elif "listValue" in value:
+                    result = [
+                        _convert(item) for item in value["listValue"].get("values", [])
+                    ]
+                elif "structValue" in value:
+                    result = {
+                        k: _convert(v)
+                        for k, v in value["structValue"].get("fields", {}).items()
+                    }
+                else:
+                    result = {k: _convert(v) for k, v in value.items()}
+
+                return result
+
+            listvalue = getattr(value, "list_value", None)
+            if listvalue is not None:
+                return [_convert(item) for item in listvalue]
+
+            return value
+
+        if isinstance(struct_obj, Struct):
+            return {key: _convert(val) for key, val in struct_obj.fields.items()}
+
+        try:
+            return MessageToDict(struct_obj)
+        except Exception as e:
+            logger.debug(f"Struct conversion fallback used: {e}")
+            return {}
+
     # Enhanced indexing and search methods
 
     async def _index_main_document(
@@ -1084,151 +1314,102 @@ Please provide a complete answer based on the information in these documents. In
         self,
         document_id: str,
         filename: str,
-        chunks: List[str],
-        metadata: Dict[str, Any],
+        chunks: List[Dict[str, Any]],
+        doc_metadata: Dict[str, Any],
         branch_path: str,
     ) -> List[str]:
         """Index individual chunks as separate searchable documents"""
 
-        chunk_ids = []
-        sections = metadata.get("sections", [])
-        metadata.get("entities", {})
+        chunk_ids: List[str] = []
 
-        for i, chunk_text in enumerate(chunks):
+        for i, chunk in enumerate(chunks):
             chunk_id = f"{document_id}_chunk_{i}"
+            chunk_text = chunk.get("text", "")
+            chunk_metadata = chunk.get("metadata", {})
 
-            # Analyze chunk content for better searchability
-            chunk_lower = chunk_text.lower()
+            struct_data = self._build_chunk_struct_data(
+                document_id=document_id,
+                filename=filename,
+                chunk_index=i,
+                chunk_text=chunk_text,
+                chunk_metadata=chunk_metadata,
+                doc_metadata=doc_metadata,
+            )
 
-            # Determine chunk semantic type
-            chunk_type = "content"
-            if any(section.lower() in chunk_lower for section in sections):
-                chunk_type = "section_header"
-            elif any(
-                term in chunk_lower for term in ["rate", "percentage", "%", "bps"]
-            ):
-                chunk_type = "pricing"
-            elif any(term in chunk_lower for term in ["offer", "discount", "off"]):
-                chunk_type = "offer"
-            elif any(term in chunk_lower for term in ["table", "chart", "data"]):
-                chunk_type = "data"
-
-            # Extract entities from this specific chunk
-            chunk_entities = self._extract_chunk_entities(chunk_text)
-
-            # Create chunk document
-            chunk_content = {
-                "document_type": "chunk",
-                "parent_document_id": document_id,
-                "chunk_index": i,
-                "chunk_type": chunk_type,
-                "title": f"{filename} - Chunk {i + 1}",
-                "content": chunk_text,
-                "filename": filename,
-                "file_type": metadata.get("file_type", "unknown"),
-                "character_count": len(chunk_text),
-                # Chunk-specific semantic fields
-                "chunk_percentages": " ".join(chunk_entities.get("percentages", [])),
-                "chunk_currency": " ".join(chunk_entities.get("currency", [])),
-                "chunk_abbreviations": " ".join(
-                    chunk_entities.get("abbreviations", [])
-                ),
-                # Semantic flags for better ranking
-                "has_pricing_info": bool(
-                    chunk_entities.get("percentages") or chunk_entities.get("currency")
-                ),
-                "has_rates": bool(
-                    any(
-                        term in chunk_lower
-                        for term in ["rate", "%", "bps", "basis points"]
-                    )
-                ),
-                "has_base_pricing": bool(
-                    any(
-                        term in chunk_lower
-                        for term in ["base", "baseline", "base pricing", "base rate"]
-                    )
-                ),
-                "has_discounts": bool(
-                    any(
-                        term in chunk_lower
-                        for term in ["off", "discount", "reduction", "bps off"]
-                    )
-                ),
-                # Content quality indicators
-                "word_count": len(chunk_text.split()),
-                "sentence_count": len([s for s in chunk_text.split(".") if s.strip()]),
-            }
-
-            # Create chunk document
             chunk_document = discoveryengine.Document(
                 id=chunk_id,
-                struct_data=chunk_content,
+                struct_data=struct_data,
                 content=discoveryengine.Document.Content(
                     mime_type="text/plain", raw_bytes=chunk_text.encode("utf-8")
                 ),
             )
 
-            # Index chunk
             try:
                 self.client.create_document(
                     parent=branch_path, document=chunk_document, document_id=chunk_id
                 )
                 chunk_ids.append(chunk_id)
-                logger.debug(
-                    f"Indexed chunk {i + 1}/{len(chunks)}: {chunk_id} (type: {chunk_type})"
-                )
+                logger.debug(f"Indexed chunk {i + 1}/{len(chunks)}: {chunk_id}")
             except Exception as e:
                 logger.warning(f"Failed to index chunk {chunk_id}: {e}")
 
         logger.info(f"Indexed {len(chunk_ids)} chunks for document {document_id}")
         return chunk_ids
 
-    def _extract_chunk_entities(self, text: str) -> Dict[str, List[str]]:
-        """Extract entities from a specific chunk"""
-        import re
+    def _build_chunk_struct_data(
+        self,
+        *,
+        document_id: str,
+        filename: str,
+        chunk_index: int,
+        chunk_text: str,
+        chunk_metadata: Dict[str, Any],
+        doc_metadata: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Prepare structured metadata for a chunk before indexing."""
 
-        entities = {"percentages": [], "currency": [], "abbreviations": []}
+        struct_data: Dict[str, Any] = {
+            "document_type": "chunk",
+            "parent_document_id": document_id,
+            "chunk_index": chunk_index,
+            "content_type": chunk_metadata.get("content_type", "text"),
+            "title": chunk_metadata.get(
+                "headline", f"{filename} - Chunk {chunk_index + 1}"
+            ),
+            "filename": filename,
+            "file_type": doc_metadata.get("file_type", "unknown"),
+            "content": chunk_text,
+            "section_hint": chunk_metadata.get("section_hint"),
+            "page_start": chunk_metadata.get("page_start"),
+            "page_end": chunk_metadata.get("page_end"),
+            "keyword_terms": chunk_metadata.get("keyword_terms", []),
+            "entities": chunk_metadata.get("entities", {}),
+            "word_count": chunk_metadata.get("word_count"),
+            "char_count": chunk_metadata.get("char_count"),
+            "character_count": chunk_metadata.get("char_count"),
+            "token_estimate": chunk_metadata.get("token_estimate"),
+            "overlap_with_previous": chunk_metadata.get("overlap_with_previous", False),
+            "contains_table": chunk_metadata.get("contains_table", False),
+            "source_start": chunk_metadata.get("source_start"),
+            "source_end": chunk_metadata.get("source_end"),
+            "split_reason": chunk_metadata.get("split_reason"),
+            "sentence_count": chunk_metadata.get("sentence_count"),
+        }
 
-        # Percentage patterns
-        entities["percentages"] = re.findall(r"\b\d+\.?\d*\s*%", text)
-        entities["percentages"].extend(
-            re.findall(r"\b\d+\s*bps\b", text, re.IGNORECASE)
-        )
-        entities["percentages"].extend(
-            re.findall(r"\b\d+\s*basis\s*points?\b", text, re.IGNORECASE)
-        )
+        # Remove fields that are None to keep the struct clean
+        cleaned_struct = {
+            key: value for key, value in struct_data.items() if value is not None
+        }
 
-        # Currency patterns
-        entities["currency"] = re.findall(r"\$\d+(?:,\d{3})*(?:\.\d{2})?", text)
+        page_start = chunk_metadata.get("page_start")
+        page_end = chunk_metadata.get("page_end")
+        if page_start is not None:
+            if page_end is not None and page_end != page_start:
+                cleaned_struct["page_range_label"] = f"{page_start}-{page_end}"
+            else:
+                cleaned_struct["page_range_label"] = str(page_start)
 
-        # Abbreviations (2-5 capital letters)
-        entities["abbreviations"] = list(set(re.findall(r"\b[A-Z]{2,5}\b", text)))
-
-        # Filter common false positives
-        entities["abbreviations"] = [
-            abbr
-            for abbr in entities["abbreviations"]
-            if abbr
-            not in [
-                "THE",
-                "AND",
-                "FOR",
-                "YOU",
-                "ARE",
-                "NOT",
-                "BUT",
-                "CAN",
-                "ALL",
-                "ANY",
-            ]
-        ]
-
-        # Remove duplicates and limit
-        for key in entities:
-            entities[key] = list(set(entities[key]))[:5]
-
-        return entities
+        return cleaned_struct
 
     async def _create_enhanced_search_request(
         self,
@@ -1352,21 +1533,20 @@ Please provide a complete answer based on the information in these documents. In
                 "document_id": result.document.id,
                 "parent_document_id": parent_doc_id,
                 "is_chunk": is_chunk,
-                "chunk_type": (
-                    doc_data.get("chunk_type", "content")
-                    if is_chunk
-                    else "main_document"
+                "content_type": (
+                    doc_data.get("content_type", "text") if is_chunk else "document"
                 ),
                 "title": doc_data.get("title", "Unknown"),
                 "filename": doc_data.get("filename", "Unknown"),
                 "content": doc_data.get("content", ""),
                 "snippets": snippets,
                 "relevance_score": relevance_score,
-                # Include semantic flags for debugging
-                "has_pricing_info": doc_data.get("has_pricing_info", False),
-                "has_rates": doc_data.get("has_rates", False),
-                "has_base_pricing": doc_data.get("has_base_pricing", False),
-                "has_discounts": doc_data.get("has_discounts", False),
+                "section_hint": doc_data.get("section_hint"),
+                "page_start": doc_data.get("page_start"),
+                "page_end": doc_data.get("page_end"),
+                "keyword_terms": doc_data.get("keyword_terms", []),
+                "entities": doc_data.get("entities", {}),
+                "contains_table": doc_data.get("contains_table", False),
             }
 
             all_results.append(result_data)
@@ -1526,12 +1706,12 @@ Please provide a complete answer based on the information in these documents. In
                 f"Attempting broader search for {len(missing_doc_ids)} missing documents"
             )
 
-            # Use generic lending terms to find content from any lender
+            # Use neutral prompts to surface broadly representative content
             broader_queries = [
-                "rates",
-                "lending criteria requirements",
-                "mortgage products",
-                "terms conditions",
+                "overview",
+                "key points",
+                "important sections",
+                "supporting details",
             ]
 
             additional_results = []

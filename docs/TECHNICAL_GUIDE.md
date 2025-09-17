@@ -64,13 +64,15 @@ class VertexSearchService:
    chunk_content = {
        "document_type": "chunk",
        "parent_document_id": document_id,
-       "chunk_type": chunk_type,  # pricing, offer, section_header, etc.
-       "content": chunk_text,
-       "filename": filename,
-       "has_pricing_info": bool(percentages or currency),
-       "has_rates": bool('rate' in chunk_lower),
-   }
-   ```
+        "content_type": chunk_metadata["content_type"],
+        "title": chunk_metadata["headline"],
+        "content": chunk_text,
+        "filename": filename,
+        "section_hint": chunk_metadata["section_hint"],
+        "keyword_terms": chunk_metadata["keyword_terms"],
+        "entities": chunk_metadata["entities"],
+    }
+    ```
 3. Search requests use natural language queries with automatic:
    - Query expansion
    - Spell correction

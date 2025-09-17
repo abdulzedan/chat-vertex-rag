@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -11,6 +12,7 @@ import nltk
 import openpyxl
 import PyPDF2
 from docx import Document as DocxDocument
+from nltk.corpus import stopwords
 from nltk.tokenize import sent_tokenize, word_tokenize
 from vertexai.generative_models import GenerativeModel, Part
 
@@ -46,10 +48,11 @@ MIN_SECTION_LENGTH = 5
 MAX_SECTION_LENGTH = 50
 MIN_FALSE_POSITIVE_LENGTH = 3
 STRUCTURED_CONTENT_THRESHOLD = 0.2
-FINANCIAL_PATTERN_THRESHOLD = 10
 GEMINI_FILE_SIZE_LIMIT_MB = 19
 MIN_CHUNK_SENTENCES = 5
 OVERLAP_SENTENCES = 2
+KEYWORD_LIMIT = 8
+TOKEN_ESTIMATE_DIVISOR = 4
 
 
 @dataclass
@@ -89,6 +92,11 @@ class EnhancedDocumentProcessor:
         self.min_chunk_size = 300  # Minimum viable context
         self.max_chunk_size = 1500  # Optimal for completeness without fragmentation
         self.chunk_overlap = 150  # Substantial overlap to maintain context
+        try:
+            self.stop_words = set(stopwords.words("english"))
+        except LookupError:
+            nltk.download("stopwords")
+            self.stop_words = set(stopwords.words("english"))
 
         # Optional Document AI processor
         use_document_ai_env = os.getenv("USE_DOCUMENT_AI", "false")
@@ -361,6 +369,117 @@ class EnhancedDocumentProcessor:
 
         return entities
 
+    def _detect_section_hint(
+        self, chunk_text: str, sections: List[str]
+    ) -> Optional[str]:
+        """Try to align a chunk with the nearest known section heading."""
+        if not sections:
+            return None
+
+        lowered_chunk = chunk_text.lower()
+        for section in sections:
+            if section and section.lower() in lowered_chunk:
+                return section
+
+        # Fallback to the leading line if no explicit match is found
+        for line in chunk_text.split("\n"):
+            clean_line = line.strip().strip("-•*")
+            if not clean_line:
+                continue
+            if clean_line.lower().startswith("page "):
+                continue
+            return clean_line[:200]
+
+        return None
+
+    def _infer_page_range(self, chunk_text: str) -> Tuple[Optional[int], Optional[int]]:
+        """Infer page range from embedded page markers."""
+        matches = re.findall(r"--- Page (\d+) ---", chunk_text)
+        if not matches:
+            return None, None
+
+        pages = [int(num) for num in matches]
+        return min(pages), max(pages)
+
+    def _extract_keywords(self, chunk_text: str) -> List[str]:
+        """Return top keywords by frequency, excluding stopwords and short tokens."""
+        try:
+            tokens = word_tokenize(chunk_text)
+        except LookupError:
+            tokens = re.findall(r"\b\w+\b", chunk_text)
+
+        filtered = [
+            token.lower()
+            for token in tokens
+            if token.isalpha()
+            and token.lower() not in self.stop_words
+            and len(token) > 3
+        ]
+
+        if not filtered:
+            return []
+
+        counts = Counter(filtered)
+        # Preserve deterministic order by frequency then alphabetically
+        most_common = counts.most_common(KEYWORD_LIMIT)
+        return [word for word, _ in most_common]
+
+    def _derive_headline(self, chunk_text: str) -> Optional[str]:
+        """Generate a concise headline from the first meaningful line."""
+        for line in chunk_text.split("\n"):
+            clean_line = line.strip()
+            if not clean_line:
+                continue
+            if clean_line.startswith("--- Page"):
+                continue
+            words = clean_line.split()
+            if not words:
+                continue
+            return " ".join(words[:12])
+        return None
+
+    def _build_chunk_metadata(
+        self,
+        *,
+        chunk_text: str,
+        doc_metadata: DocumentMetadata,
+        source_start: int,
+        source_end: int,
+        content_type: str,
+        overlap_with_previous: bool,
+        contains_table: bool = False,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Create a consistent metadata payload for chunk indexing."""
+
+        section_hint = self._detect_section_hint(chunk_text, doc_metadata.sections)
+        page_start, page_end = self._infer_page_range(chunk_text)
+        keywords = self._extract_keywords(chunk_text)
+        entities = self._extract_entities(chunk_text)
+
+        metadata: Dict[str, Any] = {
+            "filename": doc_metadata.filename,
+            "content_type": content_type,
+            "section_hint": section_hint,
+            "headline": self._derive_headline(chunk_text),
+            "page_start": page_start,
+            "page_end": page_end,
+            "keyword_terms": keywords,
+            "entities": entities,
+            "word_count": len(chunk_text.split()),
+            "char_count": len(chunk_text),
+            "token_estimate": max(1, len(chunk_text) // TOKEN_ESTIMATE_DIVISOR),
+            "overlap_with_previous": overlap_with_previous,
+            "contains_table": contains_table,
+            "source_start": source_start,
+            "source_end": source_end,
+        }
+
+        if extra:
+            metadata.update(extra)
+
+        return metadata
+
     def _simple_sentence_split(self, text: str) -> List[str]:
         """Simple sentence splitting fallback when NLTK is not available"""
         # Split on sentence endings followed by space and capital letter or end of string
@@ -394,22 +513,10 @@ class EnhancedDocumentProcessor:
         if len(lines) > 0 and list_count / len(lines) > STRUCTURED_CONTENT_THRESHOLD:
             return True
 
-        # Check for percentage/currency patterns (financial documents)
-        financial_patterns = [
-            r"\d+\.?\d*\s*%",  # Percentages
-            r"\$\d+(?:,\d{3})*(?:\.\d{2})?",  # Currency
-            r"\d+\s*bps\b",  # Basis points
-        ]
-
-        financial_matches = 0
-        for pattern in financial_patterns:
-            financial_matches += len(re.findall(pattern, text))
-
-        # If there are many financial values, treat as structured
-        return financial_matches > FINANCIAL_PATTERN_THRESHOLD
+        return False
 
     def _semantic_chunk(
-        self, text: str, metadata: DocumentMetadata
+        self, text: str, doc_metadata: DocumentMetadata
     ) -> List[DocumentChunk]:
         """Create semantic chunks based on sentence boundaries and structure with improved sizing"""
         chunks = []
@@ -445,99 +552,105 @@ class EnhancedDocumentProcessor:
         current_length = 0
         start_char = 0
 
+        current_chunk_has_overlap = False
+
         for i, sentence in enumerate(sentences):
             sentence_length = len(sentence)
 
-            # More aggressive chunking strategy
+            # Decide whether to start a new chunk before adding this sentence
             should_create_chunk = False
+            split_reason = "continuation"
 
-            # Create chunk if max size would be exceeded
             if current_length + sentence_length > max_chunk_size and current_chunk:
                 should_create_chunk = True
-                chunk_type = "max_size"
+                split_reason = "max_size"
 
-            # Create chunk if we've reached min size and hit natural boundaries
             elif current_length >= min_chunk_size and current_chunk:
-                # Check for natural breaking points
-                if i < len(sentences) - 1 and (
-                    sentence.strip().endswith(".")
-                    or sentence.strip().endswith("!")
-                    or sentence.strip().endswith("?")
-                    or sentence.strip().endswith(":")
-                ):
+                next_sentence_break = sentence.strip().endswith((".", "!", "?", ":"))
+                if i < len(sentences) - 1 and next_sentence_break:
                     should_create_chunk = True
-                    chunk_type = "natural_break"
-
-                # For larger chunks, allow more sentences before forcing a break
-                elif (
-                    len(current_chunk) >= MIN_CHUNK_SENTENCES
-                ):  # Increased from 3 for better context
+                    split_reason = "natural_break"
+                elif len(current_chunk) >= MIN_CHUNK_SENTENCES:
                     should_create_chunk = True
-                    chunk_type = "sentence_limit"
+                    split_reason = "sentence_limit"
 
             if should_create_chunk:
-                # Create chunk
                 chunk_text = " ".join(current_chunk)
+                chunk_end = start_char + len(chunk_text)
+
+                chunk_metadata = self._build_chunk_metadata(
+                    chunk_text=chunk_text,
+                    doc_metadata=doc_metadata,
+                    source_start=start_char,
+                    source_end=chunk_end,
+                    content_type="text",
+                    overlap_with_previous=current_chunk_has_overlap,
+                    extra={
+                        "sentence_count": len(current_chunk),
+                        "split_reason": split_reason,
+                        "chunk_index": chunk_id,
+                    },
+                )
+
                 chunks.append(
                     DocumentChunk(
                         text=chunk_text,
                         chunk_id=chunk_id,
                         start_char=start_char,
-                        end_char=start_char + len(chunk_text),
-                        metadata={
-                            "filename": metadata.filename,
-                            "chunk_type": chunk_type,
-                            "sentence_count": len(current_chunk),
-                            "has_overlap": True,
-                        },
+                        end_char=chunk_end,
+                        metadata=chunk_metadata,
                     )
                 )
                 chunk_id += 1
 
-                # Start new chunk with overlap (1-2 sentences)
-                overlap_sentences = []
-                if len(current_chunk) >= OVERLAP_SENTENCES:
-                    overlap_sentences = current_chunk[
-                        -1:
-                    ]  # Take last sentence for overlap
+                # Prepare overlap for the next chunk
+                overlap_count = min(OVERLAP_SENTENCES, len(current_chunk))
+                overlap_sentences = current_chunk[-overlap_count:]
+                overlap_text = " ".join(overlap_sentences)
 
-                # Calculate new start position
-                if overlap_sentences:
-                    overlap_text = " ".join(overlap_sentences)
-                    start_char = start_char + len(chunk_text) - len(overlap_text) - 1
-                else:
-                    start_char = start_char + len(chunk_text)
+                start_char = (
+                    chunk_end - len(overlap_text) if overlap_text else chunk_end
+                )
 
-                # Reset for new chunk
                 current_chunk = overlap_sentences + [sentence]
                 current_length = sum(len(s) for s in current_chunk)
+                current_chunk_has_overlap = bool(overlap_sentences)
             else:
-                # Add sentence to current chunk
                 current_chunk.append(sentence)
                 current_length += sentence_length
 
-        # Add remaining sentences as final chunk
         if current_chunk:
             chunk_text = " ".join(current_chunk)
+            chunk_end = start_char + len(chunk_text)
+
+            chunk_metadata = self._build_chunk_metadata(
+                chunk_text=chunk_text,
+                doc_metadata=doc_metadata,
+                source_start=start_char,
+                source_end=chunk_end,
+                content_type="text",
+                overlap_with_previous=current_chunk_has_overlap,
+                extra={
+                    "sentence_count": len(current_chunk),
+                    "split_reason": "final",
+                    "chunk_index": chunk_id,
+                },
+            )
+
             chunks.append(
                 DocumentChunk(
                     text=chunk_text,
                     chunk_id=chunk_id,
                     start_char=start_char,
-                    end_char=start_char + len(chunk_text),
-                    metadata={
-                        "filename": metadata.filename,
-                        "chunk_type": "final",
-                        "sentence_count": len(current_chunk),
-                        "has_overlap": False,
-                    },
+                    end_char=chunk_end,
+                    metadata=chunk_metadata,
                 )
             )
 
         return chunks
 
     def _table_aware_chunk(
-        self, text: str, metadata: DocumentMetadata, tables: List[Dict[str, Any]]
+        self, text: str, doc_metadata: DocumentMetadata, tables: List[Dict[str, Any]]
     ) -> List[DocumentChunk]:
         """Create chunks that preserve table integrity - tables are never split"""
         chunks = []
@@ -594,19 +707,29 @@ class EnhancedDocumentProcessor:
                 table_text = segment[1]
                 table_idx = segment[2]
 
+                chunk_end = start_char + len(table_text)
+                chunk_metadata = self._build_chunk_metadata(
+                    chunk_text=table_text,
+                    doc_metadata=doc_metadata,
+                    source_start=start_char,
+                    source_end=chunk_end,
+                    content_type="table",
+                    overlap_with_previous=False,
+                    contains_table=True,
+                    extra={
+                        "table_index": table_idx,
+                        "is_complete_table": True,
+                        "chunk_index": chunk_id,
+                    },
+                )
+
                 chunks.append(
                     DocumentChunk(
                         text=table_text,
                         chunk_id=chunk_id,
                         start_char=start_char,
-                        end_char=start_char + len(table_text),
-                        metadata={
-                            "filename": metadata.filename,
-                            "chunk_type": "table",
-                            "table_index": table_idx,
-                            "contains_table": True,
-                            "is_complete_table": True,
-                        },
+                        end_char=chunk_end,
+                        metadata=chunk_metadata,
                     )
                 )
                 chunk_id += 1
@@ -616,7 +739,7 @@ class EnhancedDocumentProcessor:
                 # Text segment - chunk normally but smaller to compensate for large table chunks
                 text_segment = segment[1]
                 text_chunks = self._chunk_text_segment(
-                    text_segment, chunk_id, start_char, metadata
+                    text_segment, chunk_id, start_char, doc_metadata
                 )
                 chunks.extend(text_chunks)
                 chunk_id += len(text_chunks)
@@ -632,13 +755,13 @@ class EnhancedDocumentProcessor:
         text: str,
         start_chunk_id: int,
         start_char: int,
-        metadata: DocumentMetadata,
+        doc_metadata: DocumentMetadata,
     ) -> List[DocumentChunk]:
         """Chunk a text segment (non-table content) with optimized sizing"""
-        chunks = []
+        chunks: List[DocumentChunk] = []
 
-        # Use balanced chunks for text segments (not too small to avoid fragmentation)
-        max_chunk_size = 1200  # Increased from 300
+        max_chunk_size = 1200
+        min_chunk_size = self.min_chunk_size
 
         try:
             sentences = sent_tokenize(text)
@@ -648,55 +771,97 @@ class EnhancedDocumentProcessor:
         if not sentences:
             return []
 
-        current_chunk = []
+        current_chunk: List[str] = []
         current_length = 0
         chunk_start = start_char
+        chunk_id = start_chunk_id
+        current_chunk_has_overlap = False
 
-        for sentence in sentences:
+        for i, sentence in enumerate(sentences):
             sentence_length = len(sentence)
+            should_create_chunk = False
+            split_reason = "continuation"
 
-            # Check if adding this sentence would exceed max size
             if current_length + sentence_length > max_chunk_size and current_chunk:
-                # Create chunk
+                should_create_chunk = True
+                split_reason = "max_size"
+            elif current_length >= min_chunk_size and current_chunk:
+                next_sentence_break = sentence.strip().endswith((".", "!", "?", ":"))
+                if i < len(sentences) - 1 and next_sentence_break:
+                    should_create_chunk = True
+                    split_reason = "natural_break"
+                elif len(current_chunk) >= MIN_CHUNK_SENTENCES:
+                    should_create_chunk = True
+                    split_reason = "sentence_limit"
+
+            if should_create_chunk:
                 chunk_text = " ".join(current_chunk)
+                chunk_end = chunk_start + len(chunk_text)
+
+                chunk_metadata = self._build_chunk_metadata(
+                    chunk_text=chunk_text,
+                    doc_metadata=doc_metadata,
+                    source_start=chunk_start,
+                    source_end=chunk_end,
+                    content_type="text",
+                    overlap_with_previous=current_chunk_has_overlap,
+                    extra={
+                        "sentence_count": len(current_chunk),
+                        "split_reason": split_reason,
+                        "chunk_index": chunk_id,
+                    },
+                )
+
                 chunks.append(
                     DocumentChunk(
                         text=chunk_text,
-                        chunk_id=start_chunk_id + len(chunks),
+                        chunk_id=chunk_id,
                         start_char=chunk_start,
-                        end_char=chunk_start + len(chunk_text),
-                        metadata={
-                            "filename": metadata.filename,
-                            "chunk_type": "text",
-                            "sentence_count": len(current_chunk),
-                            "contains_table": False,
-                        },
+                        end_char=chunk_end,
+                        metadata=chunk_metadata,
                     )
                 )
+                chunk_id += 1
 
-                # Start new chunk
-                chunk_start += len(chunk_text)
-                current_chunk = [sentence]
-                current_length = sentence_length
+                overlap_count = min(OVERLAP_SENTENCES, len(current_chunk))
+                overlap_sentences = current_chunk[-overlap_count:]
+                overlap_text = " ".join(overlap_sentences)
+
+                chunk_start = (
+                    chunk_end - len(overlap_text) if overlap_text else chunk_end
+                )
+                current_chunk = overlap_sentences + [sentence]
+                current_length = sum(len(s) for s in current_chunk)
+                current_chunk_has_overlap = bool(overlap_sentences)
             else:
                 current_chunk.append(sentence)
                 current_length += sentence_length
 
-        # Add final chunk if any content remains
         if current_chunk:
             chunk_text = " ".join(current_chunk)
+            chunk_end = chunk_start + len(chunk_text)
+
+            chunk_metadata = self._build_chunk_metadata(
+                chunk_text=chunk_text,
+                doc_metadata=doc_metadata,
+                source_start=chunk_start,
+                source_end=chunk_end,
+                content_type="text",
+                overlap_with_previous=current_chunk_has_overlap,
+                extra={
+                    "sentence_count": len(current_chunk),
+                    "split_reason": "final",
+                    "chunk_index": chunk_id,
+                },
+            )
+
             chunks.append(
                 DocumentChunk(
                     text=chunk_text,
-                    chunk_id=start_chunk_id + len(chunks),
+                    chunk_id=chunk_id,
                     start_char=chunk_start,
-                    end_char=chunk_start + len(chunk_text),
-                    metadata={
-                        "filename": metadata.filename,
-                        "chunk_type": "text",
-                        "sentence_count": len(current_chunk),
-                        "contains_table": False,
-                    },
+                    end_char=chunk_end,
+                    metadata=chunk_metadata,
                 )
             )
 
@@ -1048,45 +1213,47 @@ class EnhancedDocumentProcessor:
                 logger.info(f"Using {len(tables)} tables from Document AI")
 
             # Extract metadata
-            metadata = self._extract_metadata(
+            doc_metadata = self._extract_metadata(
                 text, file_type, filename, additional_info
             )
 
             # Create semantic chunks - use table-aware chunking if Document AI was used
             if additional_info.get("document_ai_used"):
                 chunks = self._table_aware_chunk(
-                    text, metadata, additional_info.get("tables", [])
+                    text, doc_metadata, additional_info.get("tables", [])
                 )
             else:
-                chunks = self._semantic_chunk(text, metadata)
+                chunks = self._semantic_chunk(text, doc_metadata)
 
             logger.info(
                 f"Extracted {len(text)} characters, created {len(chunks)} semantic chunks"
             )
 
+            chunk_records = [
+                {
+                    "id": chunk.chunk_id,
+                    "text": chunk.text,
+                    "start": chunk.start_char,
+                    "end": chunk.end_char,
+                    "metadata": chunk.metadata,
+                }
+                for chunk in chunks
+            ]
+
             return {
                 "filename": filename,
                 "file_type": file_type,
                 "full_text": text,
-                "chunks": [chunk.text for chunk in chunks],
-                "chunk_details": [
-                    {
-                        "id": chunk.chunk_id,
-                        "text": chunk.text,
-                        "start": chunk.start_char,
-                        "end": chunk.end_char,
-                        "metadata": chunk.metadata,
-                    }
-                    for chunk in chunks
-                ],
+                "chunks": chunk_records,
+                "chunk_details": chunk_records,
                 "metadata": {
-                    "page_count": metadata.page_count,
-                    "word_count": metadata.word_count,
-                    "char_count": metadata.char_count,
-                    "has_tables": metadata.has_tables,
-                    "has_images": metadata.has_images,
-                    "sections": metadata.sections,
-                    "entities": metadata.extracted_entities,
+                    "page_count": doc_metadata.page_count,
+                    "word_count": doc_metadata.word_count,
+                    "char_count": doc_metadata.char_count,
+                    "has_tables": doc_metadata.has_tables,
+                    "has_images": doc_metadata.has_images,
+                    "sections": doc_metadata.sections,
+                    "entities": doc_metadata.extracted_entities,
                 },
                 "tables": tables,
                 "chunk_count": len(chunks),
