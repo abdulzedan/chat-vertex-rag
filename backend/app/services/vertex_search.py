@@ -389,6 +389,7 @@ Please provide a complete answer based on the information in these documents. In
                 for result in response.search_results:
                     doc_data = {}
                     if result.document.struct_data:
+                        # struct_data is a MapComposite that already converts values on access
                         doc_data = dict(result.document.struct_data)
 
                     result_data = {
@@ -1157,7 +1158,8 @@ Please provide a complete answer based on the information in these documents. In
 
             struct_data: Dict[str, Any] = {}
             if document.struct_data:
-                struct_data = self._convert_struct_to_dict(document.struct_data)
+                # struct_data is a MapComposite that already converts values on access
+                struct_data = dict(document.struct_data)
 
             filename = struct_data.get("filename", "Unknown document")
             content_type = struct_data.get("content_type", "text")
@@ -1504,8 +1506,14 @@ Please provide a complete answer based on the information in these documents. In
 
             doc_data = {}
             if result.document.struct_data:
+                # struct_data is a MapComposite that already converts values on access
                 doc_data = dict(result.document.struct_data)
                 logger.info(f"Document data keys: {list(doc_data.keys())}")
+                # Debug: Log content field info
+                content_val = doc_data.get("content", "")
+                logger.info(f"Content type: {type(content_val)}, length: {len(str(content_val)) if content_val else 0}")
+                if content_val:
+                    logger.info(f"Content preview: {str(content_val)[:200]}...")
 
             # Extract snippets
             snippets = []

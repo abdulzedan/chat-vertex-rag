@@ -993,28 +993,34 @@ class EnhancedDocumentProcessor:
             # Create Part object for Gemini
             image_part = Part.from_data(mime_type=mime_type, data=image_bytes)
 
-            # Optimized prompt for OCR
-            prompt = """Extract all text from this image with high accuracy.
+            # Optimized prompt for OCR - also request image description as fallback
+            prompt = """Analyze this image and extract information:
 
-            Requirements:
-            1. Extract ALL visible text including headers, body text, labels, captions
-            2. Preserve the reading order and structure as much as possible
-            3. For tables or structured data: format as markdown tables
-            4. Include any numbers, dates, or special characters exactly as shown
-            5. If there's no text in the image, respond with "No text detected"
+1. If there is readable text in the image, extract ALL of it exactly as shown.
+2. If this is a diagram, flowchart, or architecture image, describe what it shows including:
+   - The main components or elements
+   - How they are connected or related
+   - Any labels, titles, or annotations
+   - The overall purpose or meaning of the diagram
 
-            Output only the extracted text."""
+Provide a comprehensive description that captures all the information in the image."""
 
             response = self.vision_model.generate_content([prompt, image_part])
 
-            if response.text and response.text.strip() != "No text detected":
-                logger.info(
-                    f"Gemini extracted {len(response.text)} characters from image"
-                )
-                return response.text
+            if response.text:
+                response_text = response.text.strip()
+                # Check if the response is meaningful (not just echoing prompt or empty)
+                if response_text and len(response_text) > 20:
+                    logger.info(
+                        f"Gemini extracted {len(response_text)} characters from image"
+                    )
+                    return response_text
+                else:
+                    logger.info("No meaningful content extracted from image")
+                    return f"Image: {filename} - No text content detected"
             else:
-                logger.info("No text found in image")
-                return ""
+                logger.info("No response from Gemini for image")
+                return f"Image: {filename} - Could not analyze image content"
 
         except Exception as e:
             logger.warning(f"Gemini image processing failed: {e}")

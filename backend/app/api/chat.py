@@ -26,8 +26,9 @@ session_documents: Dict[str, List[str]] = {}
 
 async def stream_response(
     generator: AsyncGenerator[str, None],
+    citations: List[Dict] = None,
 ) -> AsyncGenerator[bytes, None]:
-    """Convert string generator to SSE format"""
+    """Convert string generator to SSE format with optional citations"""
     try:
         async for chunk in generator:
             # Format as Server-Sent Events
@@ -37,8 +38,74 @@ async def stream_response(
         error_data = json.dumps({"error": str(e)})
         yield f"data: {error_data}\n\n".encode()
     finally:
-        # Send done signal
-        yield f"data: {json.dumps({'done': True})}\n\n".encode()
+        # Send done signal with citations if available
+        done_data = {"done": True}
+        if citations:
+            done_data["citations"] = citations
+        yield f"data: {json.dumps(done_data)}\n\n".encode()
+
+
+def extract_citations(search_results: List[Dict]) -> List[Dict]:
+    """Extract citation metadata from search results for display"""
+    if not search_results:
+        return []
+
+    # Group by filename to avoid duplicates
+    citations_by_file = {}
+
+    for result in search_results:
+        filename = result.get("filename", "Unknown")
+        if filename not in citations_by_file:
+            citations_by_file[filename] = {
+                "filename": filename,
+                "document_id": result.get("parent_document_id") or result.get("document_id"),
+                "pages": set(),
+                "sections": set(),
+                "relevance_score": result.get("relevance_score", 0),
+            }
+
+        # Collect page numbers
+        page_start = result.get("page_start")
+        page_end = result.get("page_end")
+        if page_start is not None:
+            if page_end is not None and page_end != page_start:
+                citations_by_file[filename]["pages"].add(f"{page_start}-{page_end}")
+            else:
+                citations_by_file[filename]["pages"].add(str(page_start))
+
+        # Collect section hints
+        section = result.get("section_hint")
+        if section:
+            citations_by_file[filename]["sections"].add(section)
+
+        # Keep highest relevance score
+        if result.get("relevance_score", 0) > citations_by_file[filename]["relevance_score"]:
+            citations_by_file[filename]["relevance_score"] = result.get("relevance_score", 0)
+
+    # Convert to list and format
+    citations = []
+    for filename, data in citations_by_file.items():
+        citation = {
+            "filename": filename,
+            "document_id": data["document_id"],
+            "relevance_score": round(data["relevance_score"], 3),
+        }
+
+        # Format pages
+        if data["pages"]:
+            pages = sorted(data["pages"], key=lambda x: int(x.split("-")[0]) if x.split("-")[0].isdigit() else 0)
+            citation["pages"] = pages[:5]  # Limit to 5 page references
+
+        # Format sections
+        if data["sections"]:
+            citation["sections"] = list(data["sections"])[:3]  # Limit to 3 sections
+
+        citations.append(citation)
+
+    # Sort by relevance score
+    citations.sort(key=lambda x: x["relevance_score"], reverse=True)
+
+    return citations
 
 
 @router.post("/query")
@@ -55,6 +122,10 @@ async def query_endpoint(request: QueryRequest):
         # Generate or use session ID for context
         session_id = request.session_id or str(uuid.uuid4())
         logger.info(f"Using session ID: {session_id}")
+
+        # Track search results for citations
+        search_results = []
+        citations = []
 
         # Handle document selection persistence per session
         if request.document_ids:
@@ -102,6 +173,9 @@ async def query_endpoint(request: QueryRequest):
                     )
                 else:
                     logger.info(f"Found {len(search_results)} relevant documents")
+                    # Extract citations from search results
+                    citations = extract_citations(search_results)
+                    logger.info(f"Extracted {len(citations)} citations")
                     # Generate response with conversation context
                     # Use streaming response generation
                     response_gen = _generate_contextual_response_stream(
@@ -139,9 +213,9 @@ async def query_endpoint(request: QueryRequest):
                 system_instruction="You are a helpful assistant.",
             )
 
-        # Return streaming response
+        # Return streaming response with citations
         return StreamingResponse(
-            stream_response(response_gen),
+            stream_response(response_gen, citations=citations),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

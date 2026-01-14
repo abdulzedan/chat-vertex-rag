@@ -15,9 +15,18 @@ export interface UploadResponse {
   status: string;
 }
 
+export interface Citation {
+  filename: string;
+  document_id: string;
+  relevance_score: number;
+  pages?: string[];
+  sections?: string[];
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
   isStreaming?: boolean;
+  citations?: Citation[];
 }

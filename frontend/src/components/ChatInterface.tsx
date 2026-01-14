@@ -12,17 +12,50 @@ import {
 } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
-import { ChatMessage, Document } from '@/types';
+import { ChatMessage, Document, Citation } from '@/types';
 
 interface ChatInterfaceProps {
   selectedDocuments: Document[];
 }
 
-interface Citation {
+// Legacy citation type for text parsing (kept for backwards compatibility)
+interface LegacyCitation {
   id: number;
   text: string;
   source: string;
 }
+
+// Component to display citations from the backend
+const CitationsDisplay: React.FC<{ citations: Citation[] }> = ({ citations }) => {
+  if (!citations || citations.length === 0) return null;
+
+  return (
+    <div className='mt-3 border-t border-border/50 pt-3'>
+      <div className='mb-2 text-xs font-medium text-muted-foreground'>Sources:</div>
+      <div className='flex flex-wrap gap-2'>
+        {citations.map((citation, index) => (
+          <div
+            key={index}
+            className='inline-flex items-center gap-1.5 rounded-md bg-background/80 px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-background hover:text-foreground'
+          >
+            <FileText className='h-3 w-3 flex-shrink-0' />
+            <span className='font-medium'>{citation.filename}</span>
+            {citation.pages && citation.pages.length > 0 && (
+              <span className='text-muted-foreground/70'>
+                (p. {citation.pages.slice(0, 3).join(', ')}{citation.pages.length > 3 ? '...' : ''})
+              </span>
+            )}
+            {citation.sections && citation.sections.length > 0 && !citation.pages && (
+              <span className='text-muted-foreground/70'>
+                • {citation.sections[0]}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
 
 // Thinking animation component
 const ThinkingDots: React.FC = () => {
@@ -41,9 +74,9 @@ const ThinkingDots: React.FC = () => {
   );
 };
 
-// Helper function to format content with citations
+// Helper function to format content with inline citations (legacy text parsing)
 const formatMessageContent = (content: string): React.ReactNode => {
-  const citations: Citation[] = [];
+  const citations: LegacyCitation[] = [];
   let citationCounter = 1;
   let processedContent = content;
 
@@ -126,7 +159,7 @@ const formatMessageContent = (content: string): React.ReactNode => {
 // Component to format message content with proper styling
 const FormattedMessage: React.FC<{
   content: string;
-  citations?: Citation[];
+  citations?: LegacyCitation[];
 }> = ({ content }) => {
   const [copied, setCopied] = useState(false);
 
@@ -468,8 +501,21 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedDocuments }) => {
 
                   // Remove artificial delay for smoother streaming
                 } else if (data.done) {
-                  console.log('Stream completed');
-                  // Handle completion signal
+                  console.log('Stream completed', data.citations ? `with ${data.citations.length} citations` : 'without citations');
+                  // Handle completion signal with citations
+                  if (data.citations && data.citations.length > 0 && messageAdded) {
+                    flushSync(() => {
+                      setMessages(prev => {
+                        const newMessages = [...prev];
+                        const lastMessage = newMessages[newMessages.length - 1];
+                        newMessages[newMessages.length - 1] = {
+                          ...lastMessage,
+                          citations: data.citations,
+                        };
+                        return newMessages;
+                      });
+                    });
+                  }
                   break;
                 }
               } catch (e) {
@@ -616,6 +662,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedDocuments }) => {
                             {formatMessageContent(message.content)}
                             {message.isStreaming && (
                               <span className='ml-0.5 inline-block h-4 w-1 animate-pulse bg-current' />
+                            )}
+                            {!message.isStreaming && message.citations && (
+                              <CitationsDisplay citations={message.citations} />
                             )}
                           </>
                         ) : (

@@ -28,29 +28,66 @@ This repository contains a Retrieval-Augmented Generation (RAG) application that
 
 *Document ingestion* uses a hierarchical strategy: Document AI (optional) → Gemini multimodal → format-specific parsers. Chunks carry section hints, page ranges, keyword terms, and entity summaries. *Retrieval* relies on Vertex AI Search with streaming Gemini responses. When the serving index cannot satisfy a query, the backend synthesizes results from cached chunks or pulls them directly from Discovery Engine so users still receive document summaries.
 
+## Quick Start
+
+```bash
+# 1. Authenticate with Google Cloud
+gcloud auth login
+gcloud auth application-default login
+
+# 2. Create GCP resources (datastore, search engine, bucket)
+./scripts/setup-gcp.sh
+
+# 3. Copy the script output into backend/.env
+#    (The script prints the exact values to use)
+cp backend/.env.example backend/.env
+# Then edit backend/.env with the values from step 2
+
+# 4. Install dependencies
+./scripts/setup-dev.sh
+
+# 5. Start the backend (in one terminal)
+cd backend && source venv/bin/activate && uvicorn app.main:app --reload --port 8000
+
+# 6. Start the frontend (in another terminal)
+cd frontend && npm run dev
+
+# 7. Open http://localhost:3000
+```
+
 ## Prerequisites
 
-- macOS, Linux, or WSL with Bash, `python3` (3.9+), and `node` (16+; project tested with Node 20+).  
-- A Google Cloud project with billing enabled.  
-- gcloud CLI initialised (`gcloud init`) and application-default credentials (`gcloud auth application-default login`).  
+- macOS, Linux, or WSL with Bash, `python3` (3.9–3.12 recommended), and `node` (16+; tested with Node 20+).
+- A Google Cloud project with billing enabled.
+- gcloud CLI installed and initialized (`gcloud init`).
 - IAM roles: `roles/aiplatform.user`, `roles/discoveryengine.admin`, `roles/storage.objectAdmin`; add `roles/documentai.editor` if you plan to enable Document AI.
 
 ## Provisioning Google Cloud Resources
 
-1. Enable core APIs:
-   ```bash
-   gcloud services enable aiplatform.googleapis.com \
-       discoveryengine.googleapis.com \
-       documentai.googleapis.com \
-       storage.googleapis.com
-   ```
-2. From the repository root run the bootstrap script:
-   ```bash
-   ./scripts/setup-gcp.sh
-   ```
-   The script verifies credentials, creates a temporary staging bucket named `${GCP_PROJECT_ID}-rag-temp`, and prints the Discovery Engine datastore/app IDs to store in your environment file. If the script cannot create resources automatically, follow the manual prompts and capture the IDs from the Cloud Console.
+Run the bootstrap script from the repository root:
 
-3. Document AI (optional): note the processor ID and region if you create a Form Parser; set `DOCAI_PROCESSOR_ID` and `DOCAI_LOCATION` accordingly.
+```bash
+./scripts/setup-gcp.sh
+```
+
+The script will:
+- Enable required APIs (Vertex AI, Discovery Engine, Document AI, Cloud Storage)
+- Create a Discovery Engine datastore and search engine
+- Create a GCS staging bucket
+- Print environment variables to copy into `backend/.env`
+
+**Customization:** You can customize resource names via environment variables:
+```bash
+export DATASTORE_ID="my-datastore"
+export ENGINE_ID="my-engine"
+./scripts/setup-gcp.sh
+```
+
+**If gcloud CLI lacks discovery-engine commands:** The script automatically falls back to REST API calls. No manual intervention needed.
+
+**For detailed setup instructions** including manual Cloud Console steps, see [`docs/GCP_SETUP.md`](docs/GCP_SETUP.md).
+
+**Document AI (optional):** Create a Form Parser processor and set `DOCAI_PROCESSOR_ID` and `DOCAI_LOCATION` in your `.env`.
 
 ## Local Environment Setup
 
@@ -74,21 +111,22 @@ npm install
 ```
 
 ### Environment configuration
-Create `backend/.env` before running the backend. Key variables:
+Create `backend/.env` before running the backend. See `backend/.env.example` for a complete template.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `GCP_PROJECT_ID` | ✓ | Google Cloud project that hosts Vertex AI Search and storage. |
-| `GCP_LOCATION` | ✓ | Location for Discovery Engine (usually `global`). |
+| `GCP_LOCATION` | ✓ | **Vertex AI region** for Gemini models (e.g., `us-central1`). Do NOT use `global`. |
 | `GEMINI_MODEL` | ✓ | Gemini model for generation, e.g. `gemini-2.0-flash-001`. |
 | `VERTEX_SEARCH_DATASTORE_ID` | ✓ | Discovery Engine datastore ID produced by `setup-gcp.sh`. |
 | `VERTEX_SEARCH_APP_ID` | ✓ | Enterprise Search app/engine ID. |
+| `GCS_STAGING_BUCKET` | ✓ | GCS bucket for staging uploads (default: `${GCP_PROJECT_ID}-rag-temp`). |
 | `USE_DOCUMENT_AI` | optional | `true` to run Document AI form parser before other extractors. |
-| `USE_GEMINI_FALLBACK` | optional | Defaults to `true`; set to `false` to skip Gemini multimodal extraction. |
 | `USE_VERTEX_RANKING` | optional | Enable Vertex AI Builder re-ranking (`true`/`false`). |
-| `GCS_STAGING_BUCKET` | optional | Overrides the default `${GCP_PROJECT_ID}-rag-temp` staging bucket used during ingestion. |
 | `USE_VERTEX_GROUNDING` | optional | Enable grounding calls for generated answers. |
 | `DOCAI_PROCESSOR_ID` / `DOCAI_LOCATION` | optional | Required only when Document AI is enabled. |
+
+> **Note:** Discovery Engine uses location `global` internally - this is handled by the backend code. The `GCP_LOCATION` variable is only for Vertex AI (Gemini).
 
 ## Running the Project Locally
 
@@ -161,6 +199,9 @@ State is local to components; no external state libraries are required.
 | Slow PDF processing | Flip `USE_DOCUMENT_AI=true` for structured files or confirm file size < 19 MB for Gemini multimodal extraction. |
 | Authentication errors | Re-run `gcloud auth application-default login` and confirm billing is enabled. |
 | Frontend cannot connect to backend | Ensure the backend is running on port 8000 and CORS is enabled (FastAPI config allows the local dev origin by default). |
+| "Unsupported region for Vertex AI" error | Set `GCP_LOCATION=us-central1` (or another valid region) in `.env`. Do NOT use `global`. |
+| `gcloud discovery-engine` not found | The setup script automatically uses REST API fallback. No action needed. See `docs/GCP_SETUP.md` for manual options. |
+| Cloud Console asks for bucket when creating datastore | Select "No data source" or create an empty bucket. The app imports documents via API, not bucket sync. Sync frequency is irrelevant. |
 
 ## Repository Layout
 
