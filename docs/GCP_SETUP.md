@@ -296,7 +296,7 @@ VERTEX_SEARCH_APP_ID=rag-demo-app
 # Note: Discovery Engine location is always "global" and is hardcoded in the backend
 
 # Required - Gemini model
-GEMINI_MODEL=gemini-2.0-flash-001
+GEMINI_MODEL=gemini-2.5-flash
 
 # Optional feature flags
 USE_DOCUMENT_AI=false                 # Enable Document AI for advanced PDF parsing

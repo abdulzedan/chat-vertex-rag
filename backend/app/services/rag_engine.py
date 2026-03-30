@@ -440,7 +440,7 @@ async def query_documents(
 
     # Create model with RAG tool
     model = GenerativeModel(
-        model_name="gemini-2.0-flash-001", tools=[rag_retrieval_tool]
+        model_name="gemini-2.5-flash", tools=[rag_retrieval_tool]
     )  # Use the specific version
 
     logger.info("Generating RAG response...")
@@ -463,7 +463,7 @@ async def query_direct(
     document_content: str, question: str
 ) -> AsyncGenerator[str, None]:
     """Query a document directly without RAG (for small documents)"""
-    model = GenerativeModel("gemini-2.0-flash-exp")
+    model = GenerativeModel("gemini-2.5-flash")
 
     prompt = f"""Based on the following document, please answer the question.
 

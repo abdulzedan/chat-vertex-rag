@@ -87,7 +87,7 @@ class EnhancedDocumentProcessor:
     """Advanced document processor with semantic chunking and metadata extraction"""
 
     def __init__(self):
-        self.vision_model = GenerativeModel("gemini-2.0-flash-001")
+        self.vision_model = GenerativeModel("gemini-2.5-flash")
         # Optimized chunking parameters for better context preservation
         self.min_chunk_size = 300  # Minimum viable context
         self.max_chunk_size = 1500  # Optimal for completeness without fragmentation

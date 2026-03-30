@@ -117,7 +117,7 @@ Create `backend/.env` before running the backend. See `backend/.env.example` for
 |----------|----------|-------------|
 | `GCP_PROJECT_ID` | ✓ | Google Cloud project that hosts Vertex AI Search and storage. |
 | `GCP_LOCATION` | ✓ | **Vertex AI region** for Gemini models (e.g., `us-central1`). Do NOT use `global`. |
-| `GEMINI_MODEL` | ✓ | Gemini model for generation, e.g. `gemini-2.0-flash-001`. |
+| `GEMINI_MODEL` | ✓ | Gemini model for generation, e.g. `gemini-2.5-flash`. |
 | `VERTEX_SEARCH_DATASTORE_ID` | ✓ | Discovery Engine datastore ID produced by `setup-gcp.sh`. |
 | `VERTEX_SEARCH_APP_ID` | ✓ | Enterprise Search app/engine ID. |
 | `GCS_STAGING_BUCKET` | ✓ | GCS bucket for staging uploads (default: `${GCP_PROJECT_ID}-rag-temp`). |
@@ -160,7 +160,7 @@ Navigate to `http://localhost:3000`, upload documents, select them, and initiate
 ## Query & Chat Pipeline
 
 - Queries with selected document IDs run through Vertex AI Search using a pre-search filter on `parent_document_id`.  
-- Results are grouped by document, truncated to the optimal context size, and streamed into Gemini (`gemini-2.0-flash-001` by default).  
+- Results are grouped by document, truncated to the optimal context size, and streamed into Gemini (`gemini-2.5-flash` by default).  
 - Conversation history is stored per session to support follow-up questions; query reformulation injects prior context when the user references “that document” or similar pronouns.
 
 ## Key API Endpoints
