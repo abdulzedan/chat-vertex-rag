@@ -41,6 +41,8 @@ PROJECT_ID="${GCP_PROJECT_ID:-$(gcloud config get-value project 2>/dev/null || t
 ENGINE_LOCATION="${ENGINE_LOCATION:-global}"
 DATASTORE_ID="${DATASTORE_ID:-rag-demo-datastore}"
 APP_ID="${ENGINE_ID:-rag-demo-app}"
+DATASTORE_V2_ID="${DATASTORE_V2_ID:-rag-demo-datastore-v2}"
+APP_V2_ID="${ENGINE_V2_ID:-rag-demo-app-v2}"
 STAGING_BUCKET="${GCS_STAGING_BUCKET:-${PROJECT_ID}-rag-temp}"
 
 # -----------------------------------------------------------------------------
@@ -70,6 +72,8 @@ echo "Configuration:"
 echo "  Project ID      : ${PROJECT_ID}"
 echo "  Data Store ID   : ${DATASTORE_ID}"
 echo "  Engine ID       : ${APP_ID}"
+echo "  V2 Data Store   : ${DATASTORE_V2_ID}"
+echo "  V2 Engine ID    : ${APP_V2_ID}"
 echo "  Location        : ${ENGINE_LOCATION}"
 echo "  Staging Bucket  : ${STAGING_BUCKET}"
 echo ""
@@ -331,6 +335,91 @@ else
 fi
 
 # -----------------------------------------------------------------------------
+# Create/Verify V2 Data Store (Native Layout Parsing + Chunking)
+# -----------------------------------------------------------------------------
+echo ""
+echo "🏗️  Setting up V2 Data Store (layout-based chunking)..."
+
+# V2 data store uses REST API only (documentProcessingConfig requires REST)
+EXISTING_V2=$(api_get "${DATASTORE_API_URL}/${DATASTORE_V2_ID}")
+if echo "${EXISTING_V2}" | grep -q '"name"' && ! echo "${EXISTING_V2}" | grep -q '"error"'; then
+    echo "   ✅ V2 Data store '${DATASTORE_V2_ID}' already exists"
+else
+    echo "   📦 Creating V2 data store '${DATASTORE_V2_ID}' with layout parsing..."
+    RESPONSE_V2=$(api_post "${DATASTORE_API_URL}?dataStoreId=${DATASTORE_V2_ID}" '{
+        "displayName": "RAG Demo Data Store V2",
+        "industryVertical": "GENERIC",
+        "solutionTypes": ["SOLUTION_TYPE_SEARCH"],
+        "contentConfig": "CONTENT_REQUIRED",
+        "documentProcessingConfig": {
+            "chunkingConfig": {
+                "layoutBasedChunkingConfig": {
+                    "chunkSize": 500,
+                    "includeAncestorHeadings": true
+                }
+            },
+            "defaultParsingConfig": {
+                "layoutParsingConfig": {}
+            }
+        }
+    }')
+
+    if echo "${RESPONSE_V2}" | grep -q '"error"'; then
+        if echo "${RESPONSE_V2}" | grep -q "ALREADY_EXISTS"; then
+            echo "   ✅ V2 Data store '${DATASTORE_V2_ID}' already exists"
+        else
+            echo "   ❌ Failed to create V2 data store:"
+            echo "${RESPONSE_V2}" | grep -o '"message": "[^"]*"' | head -1
+            echo "   ⚠️  Continuing without V2 data store (V1 will still work)"
+        fi
+    else
+        OPERATION_NAME_V2=$(echo "${RESPONSE_V2}" | grep -o '"name": "[^"]*"' | head -1 | sed 's/"name": "//;s/"$//')
+        if [[ -n "${OPERATION_NAME_V2}" ]]; then
+            wait_for_operation "${OPERATION_NAME_V2}"
+        fi
+        echo "   ✅ V2 Data store created with layout-based chunking"
+    fi
+fi
+
+# -----------------------------------------------------------------------------
+# Create/Verify V2 Search Engine
+# -----------------------------------------------------------------------------
+echo ""
+echo "🏗️  Setting up V2 Search Engine..."
+
+EXISTING_V2_ENGINE=$(api_get "${ENGINE_API_URL}/${APP_V2_ID}")
+if echo "${EXISTING_V2_ENGINE}" | grep -q '"name"' && ! echo "${EXISTING_V2_ENGINE}" | grep -q '"error"'; then
+    echo "   ✅ V2 Search engine '${APP_V2_ID}' already exists"
+else
+    echo "   📦 Creating V2 search engine '${APP_V2_ID}'..."
+    RESPONSE_V2_ENGINE=$(api_post "${ENGINE_API_URL}?engineId=${APP_V2_ID}" "{
+        \"displayName\": \"RAG Demo Search App V2\",
+        \"solutionType\": \"SOLUTION_TYPE_SEARCH\",
+        \"dataStoreIds\": [\"${DATASTORE_V2_ID}\"],
+        \"searchEngineConfig\": {
+            \"searchTier\": \"SEARCH_TIER_ENTERPRISE\",
+            \"searchAddOns\": [\"SEARCH_ADD_ON_LLM\"]
+        }
+    }")
+
+    if echo "${RESPONSE_V2_ENGINE}" | grep -q '"error"'; then
+        if echo "${RESPONSE_V2_ENGINE}" | grep -q "ALREADY_EXISTS"; then
+            echo "   ✅ V2 Search engine '${APP_V2_ID}' already exists"
+        else
+            echo "   ❌ Failed to create V2 search engine:"
+            echo "${RESPONSE_V2_ENGINE}" | grep -o '"message": "[^"]*"' | head -1
+            echo "   ⚠️  Continuing without V2 engine (V1 will still work)"
+        fi
+    else
+        OPERATION_NAME_V2_ENGINE=$(echo "${RESPONSE_V2_ENGINE}" | grep -o '"name": "[^"]*"' | head -1 | sed 's/"name": "//;s/"$//')
+        if [[ -n "${OPERATION_NAME_V2_ENGINE}" ]]; then
+            wait_for_operation "${OPERATION_NAME_V2_ENGINE}"
+        fi
+        echo "   ✅ V2 Search engine created"
+    fi
+fi
+
+# -----------------------------------------------------------------------------
 # Create/Verify GCS Bucket
 # -----------------------------------------------------------------------------
 echo ""
@@ -354,6 +443,8 @@ echo ""
 echo "Resources created/verified:"
 echo "  Data Store    : projects/${PROJECT_ID}/locations/${ENGINE_LOCATION}/collections/default_collection/dataStores/${DATASTORE_ID}"
 echo "  Search Engine : projects/${PROJECT_ID}/locations/${ENGINE_LOCATION}/collections/default_collection/engines/${APP_ID}"
+echo "  V2 Data Store : projects/${PROJECT_ID}/locations/${ENGINE_LOCATION}/collections/default_collection/dataStores/${DATASTORE_V2_ID}"
+echo "  V2 Engine     : projects/${PROJECT_ID}/locations/${ENGINE_LOCATION}/collections/default_collection/engines/${APP_V2_ID}"
 echo "  GCS Bucket    : gs://${STAGING_BUCKET}"
 echo ""
 echo "📝 Copy the following into backend/.env:"
@@ -362,8 +453,12 @@ echo "  GCP_PROJECT_ID=${PROJECT_ID}"
 echo "  GCP_LOCATION=us-central1"
 echo "  VERTEX_SEARCH_DATASTORE_ID=${DATASTORE_ID}"
 echo "  VERTEX_SEARCH_APP_ID=${APP_ID}"
+echo "  VERTEX_SEARCH_DATASTORE_V2_ID=${DATASTORE_V2_ID}"
+echo "  VERTEX_SEARCH_APP_V2_ID=${APP_V2_ID}"
 echo "  GCS_STAGING_BUCKET=${STAGING_BUCKET}"
-echo "  GEMINI_MODEL=gemini-2.0-flash-001"
+echo "  GEMINI_MODEL=gemini-2.5-flash"
+echo "  USE_V2_DATASTORE=true"
+echo "  USE_STREAM_ANSWER=false"
 echo ""
 echo "  # Note: GCP_LOCATION is for Vertex AI (Gemini), not Discovery Engine."
 echo "  # Discovery Engine uses 'global' internally (handled by the backend)."
