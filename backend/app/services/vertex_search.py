@@ -2073,6 +2073,10 @@ Please provide a complete answer based on the information in these documents. In
 
             # Use Vertex AI Search's natural relevance score without artificial boosting
             relevance_score = self._extract_relevance_score(result)
+            logger.info(
+                f"Result {result_count} relevance: {relevance_score} "
+                f"(model_scores present: {bool(result.model_scores)})"
+            )
 
             # Determine if this is a chunk or main document
             document_type = doc_data.get("document_type", "unknown")

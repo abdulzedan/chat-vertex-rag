@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -195,9 +196,18 @@ async def query_endpoint(request: QueryRequest):
 
                     search_meta = getattr(search_service, "last_search_meta", {})
                     detail_parts = []
+                    # Total indexed chunks for context
+                    total_indexed = sum(
+                        d.get("chunk_count", 0)
+                        for d in search_service.documents.values()
+                    )
                     total_size = search_meta.get("total_size", 0)
-                    if total_size:
-                        detail_parts.append(f"{total_size} total matches in index")
+                    if total_indexed and total_size:
+                        detail_parts.append(
+                            f"Searched {total_indexed} chunks → {total_size} matched → {len(search_results)} returned"
+                        )
+                    elif total_size:
+                        detail_parts.append(f"{total_size} matches in index")
                     if top_score > 0:
                         detail_parts.append(f"Top relevance: {top_score:.2f}")
                     if len(doc_names) <= 3:
@@ -212,6 +222,7 @@ async def query_endpoint(request: QueryRequest):
                         f"Found {len(search_results)} results from {unique_docs} documents",
                         detail=" · ".join(detail_parts) if detail_parts else None,
                     )
+                    await asyncio.sleep(0.3)
 
                     # --- Activity: Query rewriting by Discovery Engine ---
                     corrected = search_meta.get("corrected_query", "")
@@ -237,8 +248,9 @@ async def query_endpoint(request: QueryRequest):
                         await activity_broadcaster.emit_success(
                             "rewriting",
                             "Query accepted as-is (no rewriting needed)",
-                            detail=f"Spell correction: AUTO · Query expansion: AUTO (pin_unexpanded=true)",
+                            detail="Spell correction: AUTO · Query expansion: AUTO (pin_unexpanded=true)",
                         )
+                    await asyncio.sleep(0.3)
 
                     # --- Activity: Extractive answer (direct answer from DE) ---
                     for r in search_results[:3]:
@@ -254,6 +266,7 @@ async def query_endpoint(request: QueryRequest):
                                     "Extractive answer from Discovery Engine",
                                     detail=f'"{clean}"',
                                 )
+                                await asyncio.sleep(0.3)
                                 break
 
                     # --- Activity: DE Summary (if available and useful) ---
@@ -275,6 +288,7 @@ async def query_endpoint(request: QueryRequest):
                             f"Discovery Engine grounded summary ({len(de_summary)} chars)",
                             detail=summary_preview,
                         )
+                        await asyncio.sleep(0.3)
 
                     # --- Activity: Ranked results breakdown ---
                     ranking_lines = []
@@ -301,6 +315,7 @@ async def query_endpoint(request: QueryRequest):
                         f"Top {min(5, len(sorted_results))} results by relevance",
                         detail="\n".join(ranking_lines),
                     )
+                    await asyncio.sleep(0.3)
 
                     logger.info(f"Found {len(search_results)} relevant documents")
 
@@ -318,6 +333,7 @@ async def query_endpoint(request: QueryRequest):
                         f"Assembled {total_context_chars:,} chars of context",
                         detail=context_breakdown,
                     )
+                    await asyncio.sleep(0.3)
 
                     # Extract citations from search results
                     citations = extract_citations(search_results)

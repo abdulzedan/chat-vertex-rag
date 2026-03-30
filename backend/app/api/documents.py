@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import uuid
@@ -87,6 +88,7 @@ async def upload_file(file: UploadFile = File(...)):
             f"File accepted: {file.filename}",
             detail=f"Type: {file.content_type} · Size: {size_str}",
         )
+        await asyncio.sleep(0.3)
 
         # Save file temporarily
         file_path = await save_uploaded_file(content, file.filename)
@@ -128,6 +130,7 @@ async def upload_file(file: UploadFile = File(...)):
                 f"Created {processed_doc['chunk_count']} semantic chunks",
                 detail=" · ".join(proc_details),
             )
+            await asyncio.sleep(0.3)
 
             # Generate unique document ID
             document_id = str(uuid.uuid4())
