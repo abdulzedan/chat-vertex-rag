@@ -6,7 +6,7 @@ from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from google.api_core.exceptions import GoogleAPIError, ServiceUnavailable
+from google.api_core.exceptions import GoogleAPIError, NotFound, ServiceUnavailable
 from google.cloud import discoveryengine_v1 as discoveryengine
 from google.protobuf.json_format import MessageToDict
 from google.protobuf.struct_pb2 import Struct
@@ -51,6 +51,9 @@ class VertexSearchService:
         # Conversation storage for context management
         self.conversations = {}  # session_id -> conversation_id
 
+        # Metadata from the last search (for activity log / debugging)
+        self.last_search_meta: Dict[str, Any] = {}
+
         # Optional Vertex AI Builder APIs
         self.use_ranking = (
             VERTEX_AI_BUILDER_AVAILABLE
@@ -73,14 +76,43 @@ class VertexSearchService:
         else:
             self.grounding_service = None
 
+        # V2 data store configuration (native layout parsing + chunking)
+        self.data_store_v2_id = os.getenv(
+            "VERTEX_SEARCH_DATASTORE_V2_ID", "rag-demo-datastore-v2"
+        )
+        self.app_v2_id = os.getenv(
+            "VERTEX_SEARCH_APP_V2_ID", "rag-demo-app-v2"
+        )
+        self.use_v2_datastore = (
+            os.getenv("USE_V2_DATASTORE", "false").lower() == "true"
+        )
+        self.use_stream_answer = (
+            os.getenv("USE_STREAM_ANSWER", "false").lower() == "true"
+        )
+
+        # GCS bucket for V2 document uploads
+        self.gcs_staging_bucket = os.getenv("GCS_STAGING_BUCKET", "")
+
         # Initialize clients
         self.client = discoveryengine.DocumentServiceClient()
         self.search_client = discoveryengine.SearchServiceClient()
         self.conversation_client = discoveryengine.ConversationalSearchServiceClient()
         self.data_store_client = discoveryengine.DataStoreServiceClient()
 
-        # Initialize data store
+        # Optional clients for V2 features
+        try:
+            self.completion_client = discoveryengine.CompletionServiceClient()
+        except Exception:
+            self.completion_client = None
+
+        # Initialize data stores
         self._ensure_data_store_exists()
+
+        if self.use_v2_datastore:
+            self._ensure_v2_data_store_exists()
+            logger.info(
+                f"V2 data store enabled: {self.data_store_v2_id} (app: {self.app_v2_id})"
+            )
 
     def _ensure_data_store_exists(self):
         """Create data store if it doesn't exist"""
@@ -135,6 +167,65 @@ class VertexSearchService:
             logger.error(f"Error in data store initialization: {e}")
             # Don't raise here - continue with existing setup
             logger.info("Continuing with existing data store configuration...")
+
+    def _ensure_v2_data_store_exists(self):
+        """Create V2 data store with layout-based chunking if it doesn't exist"""
+        try:
+            data_store_path = self.data_store_client.data_store_path(
+                project=self.project_id,
+                location=self.location,
+                data_store=self.data_store_v2_id,
+            )
+
+            try:
+                self.data_store_client.get_data_store(name=data_store_path)
+                logger.info(f"Using existing V2 data store: {self.data_store_v2_id}")
+                return
+            except Exception:
+                logger.info(
+                    f"V2 data store {self.data_store_v2_id} doesn't exist, will create..."
+                )
+
+            collection_path = self.data_store_client.collection_path(
+                project=self.project_id,
+                location=self.location,
+                collection="default_collection",
+            )
+
+            data_store = discoveryengine.DataStore(
+                display_name="RAG Demo Data Store V2",
+                industry_vertical=discoveryengine.IndustryVertical.GENERIC,
+                solution_types=[discoveryengine.SolutionType.SOLUTION_TYPE_SEARCH],
+                content_config=discoveryengine.DataStore.ContentConfig.CONTENT_REQUIRED,
+                document_processing_config=discoveryengine.DocumentProcessingConfig(
+                    chunking_config=discoveryengine.DocumentProcessingConfig.ChunkingConfig(
+                        layout_based_chunking_config=discoveryengine.DocumentProcessingConfig.ChunkingConfig.LayoutBasedChunkingConfig(
+                            chunk_size=500,
+                            include_ancestor_headings=True,
+                        )
+                    ),
+                    default_parsing_config=discoveryengine.DocumentProcessingConfig.ParsingConfig(
+                        layout_parsing_config=discoveryengine.DocumentProcessingConfig.ParsingConfig.LayoutParsingConfig()
+                    ),
+                ),
+            )
+
+            try:
+                self.data_store_client.create_data_store(
+                    parent=collection_path,
+                    data_store=data_store,
+                    data_store_id=self.data_store_v2_id,
+                )
+                logger.info(f"Creating V2 data store: {self.data_store_v2_id}")
+            except GoogleAPIError as e:
+                if "already exists" in str(e).lower():
+                    logger.info(f"V2 data store {self.data_store_v2_id} already exists")
+                else:
+                    raise
+
+        except Exception as e:
+            logger.error(f"Error in V2 data store initialization: {e}")
+            logger.info("Continuing without V2 data store; V1 will still work.")
 
     async def generate_response_stream(
         self, query: str, search_results: List[Dict[str, Any]]
@@ -195,7 +286,7 @@ Question: {query}
 Please provide a complete answer based on the information in these documents. Include all relevant details, numbers, and context that would be helpful to fully address the question."""
 
             # Use streaming generation
-            model = GenerativeModel(os.getenv("GEMINI_MODEL", "gemini-2.0-flash-001"))
+            model = GenerativeModel(os.getenv("GEMINI_MODEL", "gemini-2.5-flash"))
 
             generation_config = {
                 "max_output_tokens": 8192,
@@ -225,7 +316,7 @@ Please provide a complete answer based on the information in these documents. In
             vertexai.init(project=self.project_id, location="us-central1")
 
             # Use the same model as the main generation
-            model = GenerativeModel("gemini-2.0-flash-001")
+            model = GenerativeModel("gemini-2.5-flash")
 
             response = model.generate_content(prompt)
             return response.text
@@ -280,6 +371,18 @@ Please provide a complete answer based on the information in these documents. In
             except Exception as search_error:
                 logger.warning(f"Vertex AI Search indexing failed: {search_error}")
                 raise
+
+            # Also index in V2 data store if enabled
+            if self.use_v2_datastore:
+                try:
+                    await self.index_document_v2(
+                        document_id=document_id,
+                        filename=filename,
+                        text_content=text_content,
+                        metadata=metadata,
+                    )
+                except Exception as v2_error:
+                    logger.warning(f"V2 indexing failed (non-fatal): {v2_error}")
 
             logger.info(f"Document indexed successfully: {document_id}")
             return document_id
@@ -397,7 +500,7 @@ Please provide a complete answer based on the information in these documents. In
                         "parent_document_id": doc_data.get("parent_document_id"),
                         "filename": doc_data.get("filename", "Unknown"),
                         "content": doc_data.get("content", ""),
-                        "relevance_score": getattr(result, "relevance_score", 0.0),
+                        "relevance_score": self._extract_relevance_score(result),
                         "snippets": [],  # Conversation API handles this differently
                         "is_chunk": doc_data.get("document_type") == "chunk",
                     }
@@ -464,7 +567,17 @@ Please provide a complete answer based on the information in these documents. In
         max_results: int = 10,
         document_ids: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
-        """Search for relevant documents"""
+        """Search for relevant documents. Routes to V2 if enabled."""
+        # Route to V2 search if enabled, fall back to V1 on error or empty results
+        if self.use_v2_datastore:
+            try:
+                v2_results = await self.search_documents_v2(query, max_results, document_ids)
+                if v2_results:
+                    return v2_results
+                logger.info("V2 search returned no results, falling back to V1")
+            except Exception as v2_error:
+                logger.warning(f"V2 search failed, falling back to V1: {v2_error}")
+
         try:
             logger.info(f"Searching for: {query}")
 
@@ -519,6 +632,41 @@ Please provide a complete answer based on the information in these documents. In
                         raise
 
             logger.info("Search response received, processing results...")
+
+            # Capture response-level metadata for activity log
+            self.last_search_meta = {
+                "total_size": getattr(response, "total_size", 0),
+                "corrected_query": getattr(response, "corrected_query", ""),
+                "expanded_query": "",
+                "pinned_result_count": 0,
+                "summary_text": "",
+            }
+
+            # Query expansion info
+            qei = getattr(response, "query_expansion_info", None)
+            if qei:
+                expanded = getattr(qei, "expanded_query", "")
+                if expanded:
+                    self.last_search_meta["expanded_query"] = expanded
+                    logger.info(f"Query expanded: '{query}' → '{expanded}'")
+                pinned = getattr(qei, "pinned_result_count", 0)
+                if pinned:
+                    self.last_search_meta["pinned_result_count"] = pinned
+
+            # Discovery Engine summary
+            summary_obj = getattr(response, "summary", None)
+            if summary_obj:
+                summary_text = getattr(summary_obj, "summary_text", "")
+                if summary_text:
+                    self.last_search_meta["summary_text"] = summary_text
+                    logger.info(
+                        f"DE summary available ({len(summary_text)} chars)"
+                    )
+
+            if self.last_search_meta["corrected_query"]:
+                logger.info(
+                    f"Spell correction: '{query}' → '{self.last_search_meta['corrected_query']}'"
+                )
 
             # Process results with enhanced semantic understanding
             all_results = await self._process_search_results(response.results, query)
@@ -1025,6 +1173,404 @@ Please provide a complete answer based on the information in these documents. In
             logger.error(f"Error generating response: {e}")
             return f"I encountered an error while processing your question: {str(e)}"
 
+    # =========================================================================
+    # V2 Data Store Methods (Native Layout Parsing + Chunk Search)
+    # =========================================================================
+
+    async def index_document_v2(
+        self,
+        document_id: str,
+        filename: str,
+        text_content: str,
+        metadata: Dict[str, Any],
+    ) -> str:
+        """Upload a full document to the V2 data store for native parsing + chunking.
+
+        Discovery Engine handles layout parsing and chunking automatically.
+        We upload the raw text content as a document and let the V2 data store process it.
+        """
+        try:
+            logger.info(f"V2 indexing document: {filename} (id: {document_id})")
+
+            branch_path = self.client.branch_path(
+                project=self.project_id,
+                location=self.location,
+                data_store=self.data_store_v2_id,
+                branch="default_branch",
+            )
+
+            # Build struct_data metadata for the V2 document
+            struct_data = {
+                "parent_document_id": document_id,
+                "filename": filename,
+                "file_type": metadata.get("file_type", "unknown"),
+                "upload_time": metadata.get("upload_time", datetime.now().isoformat()),
+                "content": text_content,
+            }
+
+            # Add optional metadata fields
+            for key in ("section_hint", "keyword_terms", "contains_table"):
+                if key in metadata:
+                    struct_data[key] = metadata[key]
+
+            document = discoveryengine.Document(
+                id=document_id,
+                struct_data=struct_data,
+                content=discoveryengine.Document.Content(
+                    mime_type="text/plain",
+                    raw_bytes=text_content.encode("utf-8"),
+                ),
+            )
+
+            try:
+                self.client.create_document(
+                    parent=branch_path,
+                    document=document,
+                    document_id=document_id,
+                )
+                logger.info(f"V2 document created: {document_id}")
+            except GoogleAPIError as e:
+                if "already exists" in str(e).lower():
+                    logger.info(f"V2 document {document_id} already exists, updating...")
+                    self.client.update_document(
+                        document=document,
+                        allow_missing=True,
+                    )
+                else:
+                    raise
+
+            return document_id
+
+        except Exception as e:
+            logger.error(f"V2 indexing error for {filename}: {e}")
+            raise
+
+    async def search_documents_v2(
+        self,
+        query: str,
+        max_results: int = 10,
+        document_ids: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Search the V2 data store using chunk search mode with adjacent chunks.
+
+        Uses Discovery Engine's native chunking with:
+        - searchResultMode: CHUNKS
+        - Adjacent chunk retrieval (previous/next)
+        - Relevance scores
+        - Spell correction + query expansion
+        """
+        try:
+            logger.info(f"V2 search for: {query}")
+
+            # Use V2 app serving config
+            serving_config_path = (
+                f"projects/{self.project_id}/locations/{self.location}"
+                f"/collections/default_collection/engines/{self.app_v2_id}"
+                f"/servingConfigs/{self.serving_config_id}"
+            )
+
+            # Build filter for specific documents
+            filter_expression = None
+            if document_ids:
+                doc_id_list = ", ".join([f'"{doc_id}"' for doc_id in document_ids])
+                filter_expression = f"parent_document_id: ANY({doc_id_list})"
+                logger.info(f"V2 filter: {len(document_ids)} documents")
+
+            search_max = self._calculate_optimal_search_results(
+                document_ids, max_results
+            )
+
+            # Build content search spec with chunk mode
+            content_search_spec = discoveryengine.SearchRequest.ContentSearchSpec(
+                search_result_mode=discoveryengine.SearchRequest.ContentSearchSpec.SearchResultMode.CHUNKS,
+                chunk_spec=discoveryengine.SearchRequest.ContentSearchSpec.ChunkSpec(
+                    num_previous_chunks=2,
+                    num_next_chunks=2,
+                ),
+                snippet_spec=discoveryengine.SearchRequest.ContentSearchSpec.SnippetSpec(
+                    return_snippet=True,
+                    max_snippet_count=5,
+                    reference_only=False,
+                ),
+                summary_spec=discoveryengine.SearchRequest.ContentSearchSpec.SummarySpec(
+                    summary_result_count=5,
+                    include_citations=True,
+                    ignore_adversarial_query=True,
+                    ignore_non_summary_seeking_query=False,
+                ),
+                extractive_content_spec=discoveryengine.SearchRequest.ContentSearchSpec.ExtractiveContentSpec(
+                    max_extractive_answer_count=3,
+                    max_extractive_segment_count=5,
+                ),
+            )
+
+            # Build boost spec for V2
+            boost_spec = discoveryengine.SearchRequest.BoostSpec(
+                condition_boost_specs=[
+                    discoveryengine.SearchRequest.BoostSpec.ConditionBoostSpec(
+                        condition="contains_table = true",
+                        boost=0.1,
+                    ),
+                ]
+            )
+
+            request = discoveryengine.SearchRequest(
+                serving_config=serving_config_path,
+                query=query,
+                page_size=search_max,
+                filter=filter_expression,
+                content_search_spec=content_search_spec,
+                boost_spec=boost_spec,
+                query_expansion_spec=discoveryengine.SearchRequest.QueryExpansionSpec(
+                    condition=discoveryengine.SearchRequest.QueryExpansionSpec.Condition.AUTO,
+                    pin_unexpanded_results=True,
+                ),
+                spell_correction_spec=discoveryengine.SearchRequest.SpellCorrectionSpec(
+                    mode=discoveryengine.SearchRequest.SpellCorrectionSpec.Mode.AUTO,
+                ),
+            )
+
+            # Perform search with retry
+            response = await self._search_with_retry(request)
+
+            # Log spell correction and query expansion info
+            if hasattr(response, "corrected_query") and response.corrected_query:
+                logger.info(f"V2 spell correction: '{query}' -> '{response.corrected_query}'")
+
+            # Process results
+            results = await self._process_v2_search_results(response, query)
+
+            # Apply document filtering if specified
+            if document_ids:
+                results = [
+                    r for r in results
+                    if r.get("parent_document_id") in document_ids
+                ]
+
+            logger.info(f"V2 search found {len(results)} results")
+            return results
+
+        except Exception as e:
+            logger.error(f"V2 search error: {e}")
+            raise
+
+    async def _search_with_retry(
+        self, request: discoveryengine.SearchRequest
+    ):
+        """Perform search with retry logic for transient errors."""
+        max_retries = 3
+        retry_delay = 1
+
+        for attempt in range(max_retries):
+            try:
+                return self.search_client.search(request)
+            except ServiceUnavailable:
+                if attempt < max_retries - 1:
+                    wait_time = retry_delay * (2 ** attempt) + random.uniform(0, 1)
+                    logger.warning(
+                        f"ServiceUnavailable, retrying in {wait_time:.2f}s "
+                        f"(attempt {attempt + 1}/{max_retries})"
+                    )
+                    time.sleep(wait_time)
+                else:
+                    raise
+
+    async def _process_v2_search_results(
+        self, response, query: str
+    ) -> List[Dict[str, Any]]:
+        """Process V2 search results including chunk data and adjacent chunks."""
+        results = []
+
+        for result in response.results:
+            doc_data = {}
+            if result.document.struct_data:
+                doc_data = dict(result.document.struct_data)
+
+            # Extract chunk information if available
+            chunk_info = {}
+            if hasattr(result, "chunk") and result.chunk:
+                chunk = result.chunk
+                chunk_info["chunk_content"] = getattr(chunk, "content", "")
+                chunk_info["chunk_id"] = getattr(chunk, "id", "")
+
+                # Get adjacent chunks (previous/next context)
+                if hasattr(chunk, "chunk_metadata"):
+                    meta = chunk.chunk_metadata
+                    if hasattr(meta, "previous_chunks"):
+                        chunk_info["previous_chunks"] = [
+                            getattr(pc, "content", "") for pc in meta.previous_chunks
+                        ]
+                    if hasattr(meta, "next_chunks"):
+                        chunk_info["next_chunks"] = [
+                            getattr(nc, "content", "") for nc in meta.next_chunks
+                        ]
+
+            # Use chunk content if available, otherwise fall back to doc content
+            content = chunk_info.get("chunk_content") or doc_data.get("content", "")
+
+            # Build extended content with adjacent chunks for richer context
+            extended_content = content
+            prev_chunks = chunk_info.get("previous_chunks", [])
+            next_chunks = chunk_info.get("next_chunks", [])
+            if prev_chunks or next_chunks:
+                parts = []
+                for pc in prev_chunks:
+                    if pc:
+                        parts.append(pc)
+                parts.append(content)
+                for nc in next_chunks:
+                    if nc:
+                        parts.append(nc)
+                extended_content = "\n\n".join(parts)
+
+            # Extract snippets
+            snippets = []
+            if result.document.derived_struct_data:
+                derived = dict(result.document.derived_struct_data)
+                if "snippets" in derived:
+                    snippets = [s.get("snippet", "") for s in derived["snippets"]]
+
+            relevance_score = self._extract_relevance_score(result)
+
+            result_data = {
+                "document_id": result.document.id,
+                "parent_document_id": doc_data.get("parent_document_id", result.document.id),
+                "is_chunk": True,
+                "content_type": doc_data.get("content_type", "text"),
+                "title": doc_data.get("title", doc_data.get("filename", "Unknown")),
+                "filename": doc_data.get("filename", "Unknown"),
+                "content": extended_content,
+                "snippets": snippets,
+                "relevance_score": relevance_score,
+                "section_hint": doc_data.get("section_hint"),
+                "page_start": doc_data.get("page_start"),
+                "page_end": doc_data.get("page_end"),
+                "keyword_terms": doc_data.get("keyword_terms", []),
+                "entities": doc_data.get("entities", {}),
+                "contains_table": doc_data.get("contains_table", False),
+                "has_adjacent_chunks": bool(prev_chunks or next_chunks),
+            }
+
+            results.append(result_data)
+
+        # Sort by relevance score
+        results.sort(key=lambda x: x["relevance_score"], reverse=True)
+
+        return results
+
+    async def stream_answer(
+        self,
+        query: str,
+        document_ids: Optional[List[str]] = None,
+    ) -> AsyncGenerator[str, None]:
+        """Use Discovery Engine's AnswerQuery API for combined retrieval + generation.
+
+        This performs search and answer generation in a single API call,
+        leveraging Discovery Engine's built-in grounding.
+        """
+        try:
+            logger.info(f"Stream answer for: {query}")
+
+            serving_config_path = (
+                f"projects/{self.project_id}/locations/{self.location}"
+                f"/collections/default_collection/engines/{self.app_v2_id}"
+                f"/servingConfigs/{self.serving_config_id}"
+            )
+
+            # Build the answer query request
+            answer_query_spec = discoveryengine.AnswerQueryRequest.QueryUnderstandingSpec(
+                query_rephrasing_spec=discoveryengine.AnswerQueryRequest.QueryUnderstandingSpec.QueryRephrasingSpec(
+                    disable=False,
+                ),
+            )
+
+            search_spec = discoveryengine.AnswerQueryRequest.SearchSpec(
+                search_params=discoveryengine.AnswerQueryRequest.SearchSpec.SearchParams(
+                    max_return_results=10,
+                ),
+            )
+
+            # Add document filter if specified
+            if document_ids:
+                doc_id_list = ", ".join([f'"{doc_id}"' for doc_id in document_ids])
+                search_spec.search_params.filter = (
+                    f"parent_document_id: ANY({doc_id_list})"
+                )
+
+            request = discoveryengine.AnswerQueryRequest(
+                serving_config=serving_config_path,
+                query=discoveryengine.Query(text=query),
+                query_understanding_spec=answer_query_spec,
+                search_spec=search_spec,
+            )
+
+            # Use the conversational search client for answer query
+            response = self.conversation_client.answer_query(request)
+
+            # Extract and yield the answer text
+            if hasattr(response, "answer") and response.answer:
+                answer_text = response.answer.answer_text
+                if answer_text:
+                    # Yield in chunks for streaming feel
+                    words = answer_text.split(" ")
+                    for i in range(0, len(words), 5):
+                        chunk = " ".join(words[i : i + 5])
+                        if i + 5 < len(words):
+                            chunk += " "
+                        yield chunk
+                else:
+                    yield "No answer could be generated from the available documents."
+            else:
+                yield "No answer available. Try rephrasing your question."
+
+        except Exception as e:
+            logger.error(f"Stream answer error: {e}")
+            yield f"Error generating answer: {str(e)}"
+
+    async def autocomplete(
+        self, query: str, max_suggestions: int = 5
+    ) -> List[Dict[str, str]]:
+        """Get autocomplete suggestions using Discovery Engine's completion API."""
+        try:
+            if not self.completion_client:
+                return []
+
+            # Use V2 data store if enabled, otherwise V1
+            data_store_id = (
+                self.data_store_v2_id if self.use_v2_datastore else self.data_store_id
+            )
+
+            data_store_path = (
+                f"projects/{self.project_id}/locations/{self.location}"
+                f"/collections/default_collection/dataStores/{data_store_id}"
+            )
+
+            request = discoveryengine.CompleteQueryRequest(
+                data_store=data_store_path,
+                query=query,
+                query_model="document-completable",
+                include_tail_suggestions=True,
+            )
+
+            response = self.completion_client.complete_query(request)
+
+            suggestions = []
+            for suggestion in response.query_suggestions:
+                suggestions.append({
+                    "suggestion": suggestion.suggestion,
+                })
+                if len(suggestions) >= max_suggestions:
+                    break
+
+            logger.info(
+                f"Autocomplete for '{query}': {len(suggestions)} suggestions"
+            )
+            return suggestions
+
+        except Exception as e:
+            logger.debug(f"Autocomplete error (non-fatal): {e}")
+            return []
+
     def _build_in_memory_results(
         self, document_ids: List[str], max_results: int
     ) -> List[Dict[str, Any]]:
@@ -1526,7 +2072,7 @@ Please provide a complete answer based on the information in these documents. In
                     ]
 
             # Use Vertex AI Search's natural relevance score without artificial boosting
-            relevance_score = getattr(result, "relevance_score", 0.0)
+            relevance_score = self._extract_relevance_score(result)
 
             # Determine if this is a chunk or main document
             document_type = doc_data.get("document_type", "unknown")
@@ -1568,6 +2114,32 @@ Please provide a complete answer based on the information in these documents. In
         all_results.sort(key=lambda x: x["relevance_score"], reverse=True)
 
         return all_results
+
+    @staticmethod
+    def _extract_relevance_score(result) -> float:
+        """Extract relevance score from a SearchResult's model_scores map.
+
+        The Python protobuf wrapper's MapComposite can sometimes appear empty
+        even when the raw proto contains data. We try the wrapper first, then
+        fall back to MessageToDict on the raw protobuf.
+        """
+        try:
+            # Try the Python wrapper first
+            if hasattr(result, "model_scores") and result.model_scores:
+                for _model_id, score_list in result.model_scores.items():
+                    if score_list.values:
+                        return float(score_list.values[0])
+
+            # Fallback: deserialize from raw protobuf
+            raw = MessageToDict(type(result).pb(result))
+            model_scores = raw.get("modelScores", {})
+            for _model_id, score_data in model_scores.items():
+                values = score_data.get("values", [])
+                if values:
+                    return float(values[0])
+        except Exception:
+            pass
+        return 0.0
 
     def clear_conversation(self, session_id: str) -> bool:
         """Clear conversation context for a session"""
