@@ -26,7 +26,7 @@ vertexai.init(project=project_id, location=location)
 logger.info(f"Vertex AI initialized for project: {project_id}, location: {location}")
 
 # Now import modules that depend on Vertex AI being initialized
-from app.api import chat, documents, websocket
+from app.api import chat, documents, search, websocket
 
 
 @asynccontextmanager
@@ -54,6 +54,7 @@ app.add_middleware(
 # Include routers
 app.include_router(documents.router, prefix="/api/documents", tags=["documents"])
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
+app.include_router(search.router, prefix="/api/search", tags=["search"])
 app.include_router(websocket.router, prefix="/ws", tags=["websocket"])
 
 
