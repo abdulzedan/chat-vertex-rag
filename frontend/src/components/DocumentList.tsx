@@ -28,10 +28,10 @@ import FileUploader from './FileUploader';
 
 interface DocumentListProps {
   selectedDocuments: Document[];
-  viewerDocument: Document | null;
+  viewerDocument?: Document | null;
   onSelectDocument: (doc: Document, isSelected: boolean) => void;
   onSelectAll: (documents: Document[], selectAll: boolean) => void;
-  onViewDocument: (doc: Document) => void;
+  onViewDocument?: (doc: Document) => void;
 }
 
 const DocumentList: React.FC<DocumentListProps> = ({
@@ -314,10 +314,10 @@ const DocumentList: React.FC<DocumentListProps> = ({
                   {/* File icon */}
                   <div className='mt-0.5'>{getFileIcon(doc.display_name)}</div>
 
-                  {/* Document info - clickable for viewing */}
+                  {/* Document info */}
                   <div
-                    className='min-w-0 flex-1 cursor-pointer'
-                    onClick={() => onViewDocument(doc)}
+                    className={`min-w-0 flex-1${onViewDocument ? ' cursor-pointer' : ''}`}
+                    onClick={() => onViewDocument?.(doc)}
                   >
                     <p className='truncate text-sm font-medium'>
                       {doc.display_name}
@@ -334,6 +334,7 @@ const DocumentList: React.FC<DocumentListProps> = ({
 
                   {/* Action buttons */}
                   <div className='flex items-center gap-1'>
+                    {onViewDocument && (
                     <Button
                       variant='ghost'
                       size='icon'
@@ -343,6 +344,7 @@ const DocumentList: React.FC<DocumentListProps> = ({
                     >
                       <Eye className='h-4 w-4' />
                     </Button>
+                    )}
                     <Button
                       variant='ghost'
                       size='icon'

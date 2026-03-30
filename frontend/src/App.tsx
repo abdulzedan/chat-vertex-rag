@@ -1,16 +1,12 @@
 import { useState } from 'react';
 import DocumentList from '@/components/DocumentList';
-import DocumentViewer from '@/components/DocumentViewer';
 import ChatInterface from '@/components/ChatInterface';
+import ActivityLog from '@/components/ActivityLog';
 import { Document } from '@/types';
 
 function App() {
-  // State for multi-document selection
   const [selectedDocuments, setSelectedDocuments] = useState<Document[]>([]);
-  // Keep single document selection for viewer
-  const [viewerDocument, setViewerDocument] = useState<Document | null>(null);
 
-  // Handle document selection for chat/search
   const handleDocumentSelect = (document: Document, isSelected: boolean) => {
     if (isSelected) {
       setSelectedDocuments(prev => [...prev, document]);
@@ -19,7 +15,6 @@ function App() {
     }
   };
 
-  // Handle selecting all/none documents
   const handleSelectAll = (documents: Document[], selectAll: boolean) => {
     if (selectAll) {
       setSelectedDocuments(documents);
@@ -30,24 +25,24 @@ function App() {
 
   return (
     <div className='flex h-screen bg-background'>
-      {/* Document List - 25% width */}
-      <div className='w-1/4 min-w-[300px] border-r'>
+      {/* Document List */}
+      <div className='w-1/4 min-w-[280px] border-r'>
         <DocumentList
           selectedDocuments={selectedDocuments}
-          viewerDocument={viewerDocument}
           onSelectDocument={handleDocumentSelect}
           onSelectAll={handleSelectAll}
-          onViewDocument={setViewerDocument}
         />
       </div>
 
-      {/* Document Viewer - Remaining space */}
-      <div className='flex flex-1 flex-col'>
-        <DocumentViewer document={viewerDocument} />
+      {/* Chat — always visible */}
+      <div className='flex flex-1 flex-col border-r'>
+        <ChatInterface selectedDocuments={selectedDocuments} />
       </div>
 
-      {/* Chat Interface - Floating button + slide-out sheet */}
-      <ChatInterface selectedDocuments={selectedDocuments} />
+      {/* Activity Log */}
+      <div className='flex w-1/4 min-w-[300px] flex-col'>
+        <ActivityLog />
+      </div>
     </div>
   );
 }

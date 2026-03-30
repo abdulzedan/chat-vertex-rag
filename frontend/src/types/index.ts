@@ -30,3 +30,12 @@ export interface ChatMessage {
   isStreaming?: boolean;
   citations?: Citation[];
 }
+
+export interface ActivityEvent {
+  type: 'activity' | 'activity_clear';
+  timestamp: string;
+  stage?: string;
+  message?: string;
+  detail?: string;
+  event_type?: 'info' | 'success' | 'warning' | 'error';
+}
