@@ -11,6 +11,7 @@ from app.models.schemas import (
     DocumentUploadResponse,
     GoogleDriveImportRequest,
 )
+from app.api.websocket import activity_broadcaster
 from app.services.document_uploader import save_uploaded_file
 from app.services.enhanced_document_processor import EnhancedDocumentProcessor
 from app.services.vertex_search import VertexSearchService
@@ -66,9 +67,8 @@ async def upload_file(file: UploadFile = File(...)):
                 logger.info(
                     f"[{request_id}] File already exists, skipping: {file.filename}"
                 )
-                # Return success response but indicate file was skipped
                 return DocumentUploadResponse(
-                    id=doc["id"],  # Use existing document ID
+                    id=doc["id"],
                     display_name=file.filename,
                     file_type=file.content_type,
                     upload_time=datetime.now(),
@@ -79,6 +79,15 @@ async def upload_file(file: UploadFile = File(...)):
         content = await file.read()
         logger.info(f"[{request_id}] File content read, size: {len(content)} bytes")
 
+        await activity_broadcaster.clear()
+        file_size_kb = len(content) / 1024
+        size_str = f"{file_size_kb:.0f} KB" if file_size_kb < 1024 else f"{file_size_kb/1024:.1f} MB"
+        await activity_broadcaster.emit_success(
+            "validate",
+            f"File accepted: {file.filename}",
+            detail=f"Type: {file.content_type} · Size: {size_str}",
+        )
+
         # Save file temporarily
         file_path = await save_uploaded_file(content, file.filename)
         logger.info(f"[{request_id}] File saved temporarily to: {file_path}")
@@ -86,6 +95,9 @@ async def upload_file(file: UploadFile = File(...)):
         # Process document to extract text
         try:
             logger.info(f"[{request_id}] Processing document...")
+            await activity_broadcaster.emit_start(
+                "process", "Processing document with enhanced parser..."
+            )
 
             # Process document using enhanced processor
             processed_doc = await enhanced_processor.process_file(
@@ -100,6 +112,21 @@ async def upload_file(file: UploadFile = File(...)):
 
             logger.info(
                 f"[{request_id}] Document processed: {processed_doc['chunk_count']} chunks, {processed_doc['character_count']} characters"
+            )
+            # Build rich processing detail
+            proc_details = [f"{processed_doc['character_count']:,} characters extracted"]
+            proc_meta = processed_doc.get("metadata", {})
+            if proc_meta.get("has_tables"):
+                proc_details.append(f"{len(processed_doc.get('tables', []))} tables detected")
+            if proc_meta.get("sections"):
+                proc_details.append(f"{len(proc_meta['sections'])} sections found")
+            if proc_meta.get("word_count"):
+                proc_details.append(f"{proc_meta['word_count']:,} words")
+
+            await activity_broadcaster.emit_success(
+                "process",
+                f"Created {processed_doc['chunk_count']} semantic chunks",
+                detail=" · ".join(proc_details),
             )
 
             # Generate unique document ID
@@ -128,6 +155,9 @@ async def upload_file(file: UploadFile = File(...)):
 
             # Index in Vertex AI Search
             logger.info(f"[{request_id}] Indexing in Vertex AI Search...")
+            await activity_broadcaster.emit_start(
+                "index", "Indexing chunks in Vertex AI Search..."
+            )
             await search_service.index_document(
                 document_id=document_id,
                 filename=file.filename,
@@ -136,6 +166,14 @@ async def upload_file(file: UploadFile = File(...)):
                 metadata=metadata,
             )
             logger.info(f"[{request_id}] Document indexed successfully!")
+            v2_detail = None
+            if search_service.use_v2_datastore:
+                v2_detail = "Also indexed in V2 data store (native layout-aware chunking)"
+            await activity_broadcaster.emit_success(
+                "index",
+                f"Indexed {processed_doc['chunk_count']} chunks in Discovery Engine",
+                detail=v2_detail,
+            )
 
         except Exception as process_error:
             logger.error(f"[{request_id}] Document processing failed: {process_error}")

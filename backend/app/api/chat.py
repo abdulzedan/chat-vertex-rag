@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime
@@ -8,6 +9,7 @@ from typing import Dict, List
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
+from app.api.websocket import activity_broadcaster
 from app.models.schemas import ChatRequest, QueryRequest
 from app.services.gemini_client import GeminiClient
 from app.services.vertex_search import VertexSearchService
@@ -150,6 +152,18 @@ async def query_endpoint(request: QueryRequest):
         # Search documents using Vertex AI Search with enhanced query
         try:
             logger.info("Searching documents with Vertex AI Search...")
+            await activity_broadcaster.clear()
+
+            # --- Activity: Query sent ---
+            query_detail_parts = [f'Query: "{request.question}"']
+            if document_ids:
+                query_detail_parts.append(f"Scope: {len(document_ids)} selected documents")
+            datastore_mode = "V2 (native chunking)" if search_service.use_v2_datastore else "V1 (custom chunks)"
+            query_detail_parts.append(f"Data store: {datastore_mode}")
+            await activity_broadcaster.emit_start(
+                "search",
+                "Querying Discovery Engine...",
+            )
 
             # Use optimized search with dynamic scaling based on document count
             # vertex_search.py now handles optimal result calculation automatically
@@ -172,10 +186,149 @@ async def query_endpoint(request: QueryRequest):
                         session_id=session_id,
                     )
                 else:
+                    # --- Activity: Search results ---
+                    unique_docs = len({r["filename"] for r in search_results})
+                    doc_names = list({r["filename"] for r in search_results})
+                    top_score = max(
+                        (r.get("relevance_score", 0) for r in search_results), default=0
+                    )
+
+                    search_meta = getattr(search_service, "last_search_meta", {})
+                    detail_parts = []
+                    total_size = search_meta.get("total_size", 0)
+                    if total_size:
+                        detail_parts.append(f"{total_size} total matches in index")
+                    if top_score > 0:
+                        detail_parts.append(f"Top relevance: {top_score:.2f}")
+                    if len(doc_names) <= 3:
+                        detail_parts.append(f"Sources: {', '.join(doc_names)}")
+                    else:
+                        detail_parts.append(
+                            f"Sources: {', '.join(doc_names[:2])} +{len(doc_names)-2} more"
+                        )
+
+                    await activity_broadcaster.emit_success(
+                        "search",
+                        f"Found {len(search_results)} results from {unique_docs} documents",
+                        detail=" · ".join(detail_parts) if detail_parts else None,
+                    )
+
+                    # --- Activity: Query rewriting by Discovery Engine ---
+                    corrected = search_meta.get("corrected_query", "")
+                    expanded = search_meta.get("expanded_query", "")
+                    pinned = search_meta.get("pinned_result_count", 0)
+
+                    rewrite_lines = []
+                    if corrected and corrected != request.question:
+                        rewrite_lines.append(f"Spell correction: \"{request.question}\" → \"{corrected}\"")
+                    if expanded and expanded != request.question and expanded != corrected:
+                        line = f"Query expansion: \"{expanded}\""
+                        if pinned:
+                            line += f" ({pinned} original results pinned)"
+                        rewrite_lines.append(line)
+
+                    if rewrite_lines:
+                        await activity_broadcaster.emit_success(
+                            "rewriting",
+                            "Query rewritten by Discovery Engine",
+                            detail="\n".join(rewrite_lines),
+                        )
+                    else:
+                        await activity_broadcaster.emit_success(
+                            "rewriting",
+                            "Query accepted as-is (no rewriting needed)",
+                            detail=f"Spell correction: AUTO · Query expansion: AUTO (pin_unexpanded=true)",
+                        )
+
+                    # --- Activity: Extractive answer (direct answer from DE) ---
+                    for r in search_results[:3]:
+                        snippets = r.get("snippets", [])
+                        if snippets:
+                            best_snippet = max(snippets, key=len) if snippets else ""
+                            if best_snippet and len(best_snippet) > 20:
+                                clean = best_snippet.replace("&#39;", "'").replace("&amp;", "&")
+                                if len(clean) > 150:
+                                    clean = clean[:147] + "..."
+                                await activity_broadcaster.emit_success(
+                                    "extractive",
+                                    "Extractive answer from Discovery Engine",
+                                    detail=f'"{clean}"',
+                                )
+                                break
+
+                    # --- Activity: DE Summary (if available and useful) ---
+                    de_summary = search_meta.get("summary_text", "")
+                    # Filter out error/empty summaries from DE
+                    is_useful_summary = (
+                        de_summary
+                        and len(de_summary) > 80
+                        and "no results" not in de_summary.lower()
+                        and "try rephrasing" not in de_summary.lower()
+                        and "could not" not in de_summary.lower()
+                    )
+                    if is_useful_summary:
+                        summary_preview = de_summary[:200]
+                        if len(de_summary) > 200:
+                            summary_preview += "..."
+                        await activity_broadcaster.emit_success(
+                            "de_summary",
+                            f"Discovery Engine grounded summary ({len(de_summary)} chars)",
+                            detail=summary_preview,
+                        )
+
+                    # --- Activity: Ranked results breakdown ---
+                    ranking_lines = []
+                    sorted_results = sorted(
+                        search_results,
+                        key=lambda r: r.get("relevance_score", 0),
+                        reverse=True,
+                    )
+                    for i, r in enumerate(sorted_results[:5]):
+                        score = r.get("relevance_score", 0)
+                        fname = r.get("filename", "?")
+                        if len(fname) > 30:
+                            fname = fname[:27] + "..."
+                        section = r.get("section_hint") or r.get("title", "")
+                        if section and len(section) > 40:
+                            section = section[:37] + "..."
+                        line = f"#{i+1} [{score:.2f}] {fname}"
+                        if section:
+                            line += f" — {section}"
+                        ranking_lines.append(line)
+
+                    await activity_broadcaster.emit_success(
+                        "ranking",
+                        f"Top {min(5, len(sorted_results))} results by relevance",
+                        detail="\n".join(ranking_lines),
+                    )
+
                     logger.info(f"Found {len(search_results)} relevant documents")
+
+                    # --- Activity: Context assembly ---
+                    total_context_chars = sum(len(r.get("content", "")) for r in search_results)
+                    doc_char_counts = {}
+                    for r in search_results:
+                        fn = r.get("filename", "?")
+                        doc_char_counts[fn] = doc_char_counts.get(fn, 0) + len(r.get("content", ""))
+                    context_breakdown = " · ".join(
+                        f"{fn[:25]}: {chars:,}ch" for fn, chars in list(doc_char_counts.items())[:4]
+                    )
+                    await activity_broadcaster.emit_success(
+                        "context",
+                        f"Assembled {total_context_chars:,} chars of context",
+                        detail=context_breakdown,
+                    )
+
                     # Extract citations from search results
                     citations = extract_citations(search_results)
                     logger.info(f"Extracted {len(citations)} citations")
+
+                    # --- Activity: Generation start ---
+                    gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+                    await activity_broadcaster.emit_start(
+                        "generate",
+                        f"Generating response with {gemini_model}...",
+                    )
                     # Generate response with conversation context
                     # Use streaming response generation
                     response_gen = _generate_contextual_response_stream(
@@ -185,6 +338,9 @@ async def query_endpoint(request: QueryRequest):
                     )
             elif document_ids:
                 logger.info("No documents found in selected documents")
+                await activity_broadcaster.emit_warning(
+                    "search", "No results found in selected documents"
+                )
                 # When specific documents are selected but no results found
                 response_text = f"I couldn't find information about '{request.question}' in the selected documents. The documents you've selected might not contain relevant information for this question. Try selecting different documents or search all documents."
 
@@ -206,6 +362,11 @@ async def query_endpoint(request: QueryRequest):
 
         except Exception as search_error:
             logger.error(f"Search failed: {search_error}")
+            await activity_broadcaster.emit_error(
+                "search",
+                "Search failed — falling back to Gemini",
+                detail=str(search_error)[:200],
+            )
             # Fall back to direct Gemini
             gemini_client = GeminiClient()
             response_gen = gemini_client.generate_stream(
@@ -516,6 +677,13 @@ async def _generate_contextual_response_stream(
     # Store conversation turn after streaming is complete
     _store_conversation_turn(session_id, question, full_response)
 
+    # Signal that generation is done
+    await activity_broadcaster.emit_success(
+        "generate",
+        "Response generated",
+        detail=f"{len(full_response)} characters",
+    )
+
 
 async def _generate_contextual_response(
     question: str, search_results: List[Dict], session_id: str
@@ -636,6 +804,50 @@ def _store_conversation_turn(session_id: str, question: str, response: str):
         logger.info(
             f"Trimmed conversation history for session {session_id} to {MAX_CONVERSATION_TURNS} turns"
         )
+
+
+@router.post("/stream-answer")
+async def stream_answer_endpoint(request: QueryRequest):
+    """Use Discovery Engine's AnswerQuery API for one-call retrieval+generation.
+
+    This endpoint combines search and answer generation in a single API call,
+    leveraging Discovery Engine's built-in grounding. Only active when
+    USE_STREAM_ANSWER=true and USE_V2_DATASTORE=true.
+    """
+    try:
+        if not search_service.use_stream_answer or not search_service.use_v2_datastore:
+            raise HTTPException(
+                status_code=400,
+                detail="Stream answer requires USE_STREAM_ANSWER=true and USE_V2_DATASTORE=true",
+            )
+
+        logger.info(f"Stream answer request: {request.question}")
+
+        document_ids = request.document_ids
+        if not document_ids:
+            session_id = request.session_id or ""
+            document_ids = session_documents.get(session_id)
+
+        response_gen = search_service.stream_answer(
+            query=request.question,
+            document_ids=document_ids,
+        )
+
+        return StreamingResponse(
+            stream_response(response_gen),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in stream-answer: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/conversations/{session_id}")

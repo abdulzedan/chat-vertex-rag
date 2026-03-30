@@ -1,6 +1,7 @@
 import json
 import logging
-from typing import Set
+from datetime import datetime
+from typing import Optional, Set
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -13,8 +14,111 @@ logger = logging.getLogger(__name__)
 # Store active connections
 active_connections: Set[WebSocket] = set()
 
+# Store activity log connections (separate from chat)
+activity_connections: Set[WebSocket] = set()
+
 # Initialize search service
 search_service = VertexSearchService()
+
+
+# =============================================================================
+# Activity Broadcaster — pushes pipeline events to connected frontend clients
+# =============================================================================
+
+class ActivityBroadcaster:
+    """Broadcasts structured activity events to WebSocket clients.
+
+    Events have: timestamp, stage, message, detail (optional), type (info/success/warning/error).
+    """
+
+    async def emit(
+        self,
+        stage: str,
+        message: str,
+        detail: Optional[str] = None,
+        event_type: str = "info",
+    ):
+        """Broadcast an activity event to all connected activity clients."""
+        event = {
+            "type": "activity",
+            "timestamp": datetime.now().isoformat(),
+            "stage": stage,
+            "message": message,
+            "event_type": event_type,
+        }
+        if detail:
+            event["detail"] = detail
+
+        disconnected = set()
+        for ws in activity_connections:
+            try:
+                await ws.send_json(event)
+            except Exception:
+                disconnected.add(ws)
+
+        # Clean up disconnected clients
+        activity_connections.difference_update(disconnected)
+
+    async def emit_start(self, stage: str, message: str):
+        """Emit an in-progress event."""
+        await self.emit(stage, message, event_type="info")
+
+    async def emit_success(self, stage: str, message: str, detail: Optional[str] = None):
+        """Emit a success event."""
+        await self.emit(stage, message, detail=detail, event_type="success")
+
+    async def emit_warning(self, stage: str, message: str, detail: Optional[str] = None):
+        """Emit a warning event."""
+        await self.emit(stage, message, detail=detail, event_type="warning")
+
+    async def emit_error(self, stage: str, message: str, detail: Optional[str] = None):
+        """Emit an error event."""
+        await self.emit(stage, message, detail=detail, event_type="error")
+
+    async def clear(self):
+        """Send a clear signal to reset the activity log on clients."""
+        event = {"type": "activity_clear", "timestamp": datetime.now().isoformat()}
+        disconnected = set()
+        for ws in activity_connections:
+            try:
+                await ws.send_json(event)
+            except Exception:
+                disconnected.add(ws)
+        activity_connections.difference_update(disconnected)
+
+
+# Global broadcaster instance — imported by other modules
+activity_broadcaster = ActivityBroadcaster()
+
+
+# =============================================================================
+# WebSocket Endpoints
+# =============================================================================
+
+@router.websocket("/activity")
+async def activity_websocket(websocket: WebSocket):
+    """WebSocket endpoint for real-time activity log events."""
+    await websocket.accept()
+    activity_connections.add(websocket)
+    logger.info("Activity WebSocket client connected")
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            message = json.loads(data)
+
+            if message.get("type") == "ping":
+                await websocket.send_json({"type": "pong"})
+    except WebSocketDisconnect:
+        activity_connections.discard(websocket)
+        logger.info("Activity WebSocket client disconnected")
+    except Exception as e:
+        logger.error(f"Activity WebSocket error: {e}")
+        activity_connections.discard(websocket)
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 @router.websocket("/chat")
